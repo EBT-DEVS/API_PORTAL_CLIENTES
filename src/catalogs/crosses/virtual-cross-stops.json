@@ -1,0 +1,32 @@
+[
+  {
+    "code": "MX_CUSTOMS",
+    "stop_code": "MX_CUSTOMS",
+    "stop_name": "Aduana MX - Puente Colombia",
+    "source": "SYSTEM",
+    "latitude": 27.694439032659517,
+    "longitude": -99.74745453837865, 
+    "eta": null,
+    "sched_arrive": null,
+    "actual_arrival": null,
+    "actual_departure": null,
+    "arrival_status": "PENDING",
+    "is_completed": 0,
+    "virtual_type": "MX_CUSTOMS"
+  },
+  {
+    "code": "US_CUSTOMS",
+    "stop_code": "US_CUSTOMS",
+    "stop_name": "Aduana US - Puente Colombia",
+    "source": "SYSTEM",
+    "latitude": 27.70276195339415,
+    "longitude": -99.7391807041708, 
+    "eta": null,
+    "sched_arrive": null,
+    "actual_arrival": null,
+    "actual_departure": null,
+    "arrival_status": "PENDING",
+    "is_completed": 0,
+    "virtual_type": "US_CUSTOMS"
+  }
+]
