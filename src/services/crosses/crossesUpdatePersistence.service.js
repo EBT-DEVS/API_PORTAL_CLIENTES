@@ -1,6 +1,8 @@
 import { upsertCurrentCrossAssignment } from '../../models/crosses/crosses.assignments.model.js';
 import { updateCrossFromMcleod } from '../../models/crosses/crosses.model.js';
 import { deleteUnreferencedCrossStopsAfterSequence, updateCrossStopTimes, upsertCrossStopSync } from '../../models/crosses/crosses.stops.model.js';
+import { getTrailerData } from '../../models/db_gps/trailers.model.js';
+import { enrichActiveStopEtaFromPcMiller } from './crossesPcMillerEta.service.js';
 
 const toKey = (value) => (
     value == null ? null : String(value)
@@ -221,6 +223,36 @@ const updateStopsForCross = async ({ crossId, stops = [] }) => {
 
 };
 
+const enrichStopsEta = async ({ stops = [], gps = null } = {}) => {
+
+    try {
+        return await enrichActiveStopEtaFromPcMiller({
+            stops,
+            gps,
+        });
+    } catch (error) {
+        return {
+            stops: stops.map((stop) => ({
+                ...stop,
+                eta: null,
+            })),
+            activeStopEta: null,
+            skippedReason: error.message,
+        };
+    }
+
+};
+
+const getGpsForTrailer = async (trailerId) => {
+
+    if (!trailerId) {
+        return null;
+    }
+
+    return getTrailerData(trailerId);
+
+};
+
 const deleteStaleStopsForCross = async ({ crossId, stops = [] }) => {
 
     const maxSequence = stops.reduce((max, stop) => (
@@ -361,7 +393,17 @@ export const persistActiveCrossesUpdate = async ({ items = [] } = {}) => {
                 cross_id: crossId,
             });
 
-            const stops = item.stopsPayload?.stops || [];
+            const gps = await getGpsForTrailer(firstValue(
+                crossPayload.cross.trailer_id,
+                item.activeCross?.trailer_id,
+                item.activeCross?.caja,
+                item.activeCross?.trailer,
+            ));
+            const stopsEtaResult = await enrichStopsEta({
+                stops: item.stopsPayload?.stops || [],
+                gps,
+            });
+            const stops = stopsEtaResult.stops || [];
             const assignments = item.assignmentPayload?.assignments || [];
             const stopsResult = await updateStopsForCross({
                 crossId,
@@ -395,6 +437,8 @@ export const persistActiveCrossesUpdate = async ({ items = [] } = {}) => {
                 skippedEstimatedCustomsStopsCount: estimatedCustomsResult.skippedEstimatedStops.length,
                 upsertedAssignmentsCount: assignmentsResult.upsertedAssignments.length,
                 skippedAssignmentsCount: assignmentsResult.skippedAssignments.length,
+                activeStopEta: stopsEtaResult.activeStopEta,
+                skippedActiveStopEtaReason: stopsEtaResult.skippedReason,
                 skippedStops: stopsResult.skippedStops,
                 updatedEstimatedCustomsStops: estimatedCustomsResult.updatedEstimatedStops,
                 skippedEstimatedCustomsStops: estimatedCustomsResult.skippedEstimatedStops,
@@ -416,6 +460,8 @@ export const persistActiveCrossesUpdate = async ({ items = [] } = {}) => {
         skippedCrossesCount: skippedCrosses.length,
         updatedStopsCount: results.reduce((total, result) => total + result.updatedStopsCount, 0),
         skippedStopsCount: results.reduce((total, result) => total + result.skippedStopsCount, 0),
+        activeStopEtasCount: results.filter((result) => result.activeStopEta).length,
+        skippedActiveStopEtasCount: results.filter((result) => result.skippedActiveStopEtaReason).length,
         deletedStaleStopsCount: results.reduce((total, result) => total + result.deletedStaleStopsCount, 0),
         deletedStaleAssignmentsCount: results.reduce((total, result) => total + result.deletedStaleAssignmentsCount, 0),
         deletedStaleCustomsCount: results.reduce((total, result) => total + result.deletedStaleCustomsCount, 0),
