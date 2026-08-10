@@ -392,7 +392,7 @@ const processNotificationItem = async ({ item, recipients }) => {
         recipients_json: JSON.stringify(destinatarios),
     });
     const departureStopUpdate = await updateColombiaOriginStopDeparture({
-        cross_stop_id: item.origin_stop_id,
+        cross_stop_id: item.departure_stop_id || item.origin_stop_id,
         cross_id: item.cross_id,
         actual_departure: item.exit_at,
         actual_departure_source: resolveDepartureSource(item),
@@ -403,6 +403,7 @@ const processNotificationItem = async ({ item, recipients }) => {
         trailer_id: item.trailer_id,
         mcleod_order_id: item.mcleod_order_id,
         origin_stop_id: item.origin_stop_id,
+        departure_stop_id: item.departure_stop_id || item.origin_stop_id,
         destination_stop_id: item.destination_stop_id,
         triggerSource: item._trigger_source || 'D31_YARD_EXIT',
         triggerGeofences: item._trigger_geofences || [],
