@@ -80,21 +80,24 @@ const hasGpsCoordinates = (gps) => {
 
 };
 
-const isStopClosed = (stop) => (
-    Number(stop?.is_completed || 0) === 1
-    || hasValue(stop?.actual_departure)
+const hasDepartureDate = (stop) => (
+    hasValue(stop?.actual_departure)
 );
 
-const isStopPending = (stop) => (
+const hasNoArrivalDate = (stop) => (
     !hasValue(stop?.actual_arrival)
-    && !hasValue(stop?.actual_departure)
-    && Number(stop?.is_completed || 0) !== 1
 );
 
 const toTimestamp = (value) => {
 
     if (!hasValue(value)) {
         return null;
+    }
+
+    if (value instanceof Date) {
+        const timestamp = value.getTime();
+
+        return Number.isFinite(timestamp) ? timestamp : null;
     }
 
     const timestamp = new Date(String(value).replace(' ', 'T')).getTime();
@@ -210,6 +213,25 @@ const parsePcMillerTravelHours = (response) => {
 
 };
 
+const parsePcMillerEta = (response) => {
+
+    const mileageReport = findMileageReport(response);
+    const lines = normalizeReportLines(mileageReport?.ReportLines);
+    const destinationLine = lines[lines.length - 1] || null;
+
+    return firstValue(
+        destinationLine?.EtaEtd,
+        destinationLine?.ETAETD,
+        destinationLine?.ETA,
+        destinationLine?.Eta,
+        mileageReport?.EtaEtd,
+        mileageReport?.ETAETD,
+        mileageReport?.ETA,
+        mileageReport?.Eta,
+    );
+
+};
+
 const findActiveStopWithPrevious = (stops = []) => {
 
     const sortedStops = sortBySequence(stops);
@@ -218,7 +240,7 @@ const findActiveStopWithPrevious = (stops = []) => {
         const previousStop = sortedStops[index - 1];
         const stop = sortedStops[index];
 
-        if (isStopClosed(previousStop) && isStopPending(stop)) {
+        if (hasDepartureDate(previousStop) && hasNoArrivalDate(stop)) {
             return {
                 previousStop,
                 activeStop: stop,
@@ -265,18 +287,8 @@ export const enrichActiveStopEtaFromPcMiller = async ({ stops = [], gps = null }
         };
     }
 
-    const departureTimestamp = toTimestamp(previousStop.actual_departure);
-
-    if (!departureTimestamp) {
-        return {
-            stops: stopsWithoutEta,
-            activeStopEta: null,
-            skippedReason: 'missing_previous_departure',
-            activeStopSequence: activeStop.sequence,
-        };
-    }
-
     const origin = resolveGpsCoordinates(gps);
+    const requestedAtTimestamp = Date.now();
     const response = await getMileageAndEta(
         {
             longitude: origin.longitude,
@@ -287,18 +299,19 @@ export const enrichActiveStopEtaFromPcMiller = async ({ stops = [], gps = null }
             latitude: toNumberOrNull(activeStop.latitude),
         },
     );
+    const pcMillerEta = parsePcMillerEta(response);
     const travelHours = parsePcMillerTravelHours(response);
+    const eta = toSqlDateTime(toTimestamp(pcMillerEta))
+        || toSqlDateTime(requestedAtTimestamp + (travelHours * 60 * 60 * 1000));
 
-    if (!travelHours) {
+    if (!eta) {
         return {
             stops: stopsWithoutEta,
             activeStopEta: null,
-            skippedReason: 'pc_miller_missing_travel_hours',
+            skippedReason: 'pc_miller_missing_eta',
             activeStopSequence: activeStop.sequence,
         };
     }
-
-    const eta = toSqlDateTime(departureTimestamp + (travelHours * 60 * 60 * 1000));
 
     return {
         stops: stopsWithoutEta.map((stop) => (
@@ -313,6 +326,8 @@ export const enrichActiveStopEtaFromPcMiller = async ({ stops = [], gps = null }
             eta,
             travelHours,
             origin: 'GPS',
+            requestedAt: toSqlDateTime(requestedAtTimestamp),
+            pcMillerEta: pcMillerEta || null,
             previousStopSequence: previousStop.sequence,
             activeStopSequence: activeStop.sequence,
         },

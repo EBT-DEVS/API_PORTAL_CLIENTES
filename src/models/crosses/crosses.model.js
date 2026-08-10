@@ -55,7 +55,8 @@ export const updateCrossFromMcleod = async ({
     await executeSp('sp_cross_update_from_mcleod', [
         cross_id,
         cross_status_id,
-        priority_id,
+        // La prioridad es editable por usuario; McLeod sync no debe pisarla.
+        null,
         po_number,
         mcleod_customer_id,
         trailer_id,
@@ -70,6 +71,20 @@ export const updateCrossFromMcleod = async ({
         cross_id,
         cross_status_id,
     };
+
+};
+
+export const updateCrossPriority = async ({
+    cross_id,
+    priority_id,
+} = {}) => {
+
+    const resultSets = await executeSp('sp_cross_update_priority', [
+        cross_id,
+        priority_id,
+    ]);
+
+    return getFirstRow(resultSets);
 
 };
 

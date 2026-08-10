@@ -198,6 +198,50 @@ export const deriveCrossStatusCode = (stops = []) => {
         };
     }
 
+    if (usCustoms && hasValue(usCustoms.actual_arrival)) {
+        if (!hasValue(usCustoms.actual_departure)) {
+            return {
+                statusCode: 'AT_US_CUSTOMS',
+                reason: 'us_customs_arrived_not_departed',
+            };
+        }
+
+        if (firstTxStop && !hasValue(firstTxStop.actual_arrival)) {
+            return {
+                statusCode: 'IN_TRANSIT_TO_US_YARD',
+                reason: 'us_customs_departed_before_first_tx_stop_arrival',
+            };
+        }
+
+        if (firstTxStop && firstTxStop !== lastStop && !hasValue(firstTxStop.actual_departure)) {
+            return {
+                statusCode: 'AT_US_YARD',
+                reason: 'first_tx_stop_arrived_not_departed',
+            };
+        }
+
+        return {
+            statusCode: 'IN_TRANSIT_TO_CUSTOMER',
+            reason: 'after_us_customs_before_last_stop_departure',
+        };
+    }
+
+    if (mxCustoms && hasValue(mxCustoms.actual_arrival)) {
+        if (!hasValue(mxCustoms.actual_departure)) {
+            return {
+                statusCode: 'AT_MX_CUSTOMS',
+                reason: 'mx_customs_arrived_not_departed',
+            };
+        }
+
+        if (usCustoms && !hasValue(usCustoms.actual_arrival)) {
+            return {
+                statusCode: 'CROSSING',
+                reason: 'mx_customs_departed_before_us_customs_arrival',
+            };
+        }
+    }
+
     if (mxCustoms && !hasValue(mxCustoms.actual_arrival)) {
         return {
             statusCode: 'IN_TRANSIT_TO_BORDER',

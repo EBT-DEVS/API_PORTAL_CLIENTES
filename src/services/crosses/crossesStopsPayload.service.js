@@ -195,8 +195,8 @@ const compactConsecutiveDuplicateStops = (stops = []) => {
 
             compactedStops[compactedStops.length - 1] = {
                 ...previousStop,
-                actual_departure: stop.actual_departure,
-                is_completed: stop.actual_departure ? 1 : 0,
+                actual_departure: firstValue(stop.actual_departure, previousStop.actual_departure),
+                is_completed: firstValue(stop.actual_departure, previousStop.actual_departure) ? 1 : 0,
                 arrival_status: resolveArrivalStatus({
                     schedArrive: previousStop.sched_arrive,
                     actualArrival: previousStop.actual_arrival,

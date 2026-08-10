@@ -10,7 +10,8 @@
     "cron:crosses-insert": "node scripts/run-crosses-init.js",
     "cron:crosses-insert-date": "node scripts/run-crosses-init-by-date.js",
     "cron:crosses-update": "node scripts/run-crosses-update.js",
-    "cron:notifications": "node scripts/run-notifications.js"
+    "cron:notifications": "node scripts/run-notifications.js",
+    "cron:colombia-yard-exit-notifications": "node scripts/run-colombia-yard-exit-notifications.js"
   },
   "keywords": [],
   "author": "",

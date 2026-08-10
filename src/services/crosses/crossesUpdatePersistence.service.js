@@ -1,6 +1,7 @@
 import { upsertCurrentCrossAssignment } from '../../models/crosses/crosses.assignments.model.js';
-import { updateCrossFromMcleod } from '../../models/crosses/crosses.model.js';
-import { deleteUnreferencedCrossStopsAfterSequence, updateCrossStopTimes, upsertCrossStopSync } from '../../models/crosses/crosses.stops.model.js';
+import { getCrossDetailById, updateCrossFromMcleod } from '../../models/crosses/crosses.model.js';
+import { deleteUnreferencedCrossStopsAfterSequence, updateCrossCustomsStopTimes, upsertCrossStopSync } from '../../models/crosses/crosses.stops.model.js';
+import { getCustomsGeofencesContainingPoint } from '../../models/db_gps/geofences.model.js';
 import { getTrailerData } from '../../models/db_gps/trailers.model.js';
 import { enrichActiveStopEtaFromPcMiller } from './crossesPcMillerEta.service.js';
 
@@ -42,6 +43,12 @@ const toTimestamp = (value) => {
 
     if (!hasValue(value)) {
         return null;
+    }
+
+    if (value instanceof Date) {
+        const timestamp = value.getTime();
+
+        return Number.isFinite(timestamp) ? timestamp : null;
     }
 
     const timestamp = new Date(String(value).replace(' ', 'T')).getTime();
@@ -102,6 +109,93 @@ const buildDbStopsByCode = (stops = []) => (
     }, new Map())
 );
 
+const toNumberOrNull = (value) => {
+
+    const numberValue = Number(value);
+    return Number.isFinite(numberValue) ? numberValue : null;
+
+};
+
+const isValidLatitude = (value) => (
+    Number.isFinite(value) && value >= -90 && value <= 90
+);
+
+const isValidLongitude = (value) => (
+    Number.isFinite(value) && value >= -180 && value <= 180
+);
+
+const normalizeCoordinates = ({ latitude, longitude }) => {
+
+    if (isValidLatitude(latitude) && isValidLongitude(longitude)) {
+        return {
+            latitude,
+            longitude,
+        };
+    }
+
+    if (isValidLatitude(longitude) && isValidLongitude(latitude)) {
+        return {
+            latitude: longitude,
+            longitude: latitude,
+        };
+    }
+
+    return {
+        latitude,
+        longitude,
+    };
+
+};
+
+const resolveGpsCoordinates = (gps) => normalizeCoordinates({
+    latitude: toNumberOrNull(firstValue(
+        gps?.latitude,
+        gps?.lat,
+        gps?.Latitud,
+        gps?.latitud,
+    )),
+    longitude: toNumberOrNull(firstValue(
+        gps?.longitude,
+        gps?.lng,
+        gps?.lon,
+        gps?.Longitud,
+        gps?.longitud,
+    )),
+});
+
+const resolveGpsTimestamp = (gps) => (
+    toSqlDateTime(toTimestamp(firstValue(
+        gps?.position_date,
+        gps?.positionDate,
+        gps?.created_at,
+        gps?.createdAt,
+    )) || Date.now())
+);
+
+const hasGpsCoordinates = (gps) => {
+
+    const coordinates = resolveGpsCoordinates(gps);
+
+    return isValidLatitude(coordinates.latitude) && isValidLongitude(coordinates.longitude);
+
+};
+
+const buildCustomsStopsByCode = (stops = []) => (
+    stops.reduce((map, stop) => {
+        const stopCode = normalizeCode(stop?.stop_code);
+
+        if (CUSTOMS_STOP_CODES.has(stopCode)) {
+            map.set(stopCode, stop);
+        }
+
+        return map;
+    }, new Map())
+);
+
+const getStopId = (stop) => (
+    stop?.id || stop?.cross_stop_id || stop?.stop_id || null
+);
+
 const estimateCustomsTimes = ({ stops = [], dbStops = [] }) => {
 
     const sortedStops = sortBySequence(stops);
@@ -115,7 +209,7 @@ const estimateCustomsTimes = ({ stops = [], dbStops = [] }) => {
     const previousStop = findPreviousRealStop(sortedStops, mxCustoms);
     const nextStop = findNextRealStop(sortedStops, usCustoms);
 
-    if (!hasValue(previousStop?.actual_arrival) || !hasValue(previousStop?.actual_departure) || !hasValue(nextStop?.actual_arrival)) {
+    if (!hasValue(previousStop?.actual_departure) || !hasValue(nextStop?.actual_arrival)) {
         return [];
     }
 
@@ -154,9 +248,11 @@ const estimateCustomsTimes = ({ stops = [], dbStops = [] }) => {
                 cross_stop_id: dbStop.id || dbStop.cross_stop_id || dbStop.stop_id,
                 actual_arrival: firstValue(dbStop.actual_arrival, estimate.actual_arrival),
                 actual_departure: firstValue(dbStop.actual_departure, estimate.actual_departure),
+                shouldUpdate: !hasValue(dbStop.actual_arrival) || !hasValue(dbStop.actual_departure),
             };
         })
-        .filter(Boolean);
+        .filter(Boolean)
+        .filter((estimate) => estimate.shouldUpdate);
 
 };
 
@@ -202,12 +298,15 @@ const updateStopsForCross = async ({ crossId, stops = [] }) => {
 
     for (const stop of stops) {
         try {
-            await upsertCrossStopSync({
+            const updatedStop = await upsertCrossStopSync({
                 ...stop,
                 cross_id: crossId,
             });
 
-            updatedStops.push(stop);
+            updatedStops.push({
+                ...stop,
+                ...updatedStop,
+            });
         } catch (error) {
             skippedStops.push({
                 stop,
@@ -281,7 +380,7 @@ const updateEstimatedCustomsTimesForCross = async ({ stops = [], dbStops = [] })
 
     for (const estimatedStop of estimatedStops) {
         try {
-            await updateCrossStopTimes({
+            await updateCrossCustomsStopTimes({
                 cross_stop_id: estimatedStop.cross_stop_id,
                 actual_arrival: estimatedStop.actual_arrival,
                 actual_departure: estimatedStop.actual_departure,
@@ -299,6 +398,80 @@ const updateEstimatedCustomsTimesForCross = async ({ stops = [], dbStops = [] })
     return {
         updatedEstimatedStops,
         skippedEstimatedStops,
+    };
+
+};
+
+const updateCustomsTimesFromGeofenceForCross = async ({ dbStops = [], gps = null }) => {
+
+    const updatedGeofenceStops = [];
+    const skippedGeofenceStops = [];
+
+    if (!hasGpsCoordinates(gps)) {
+        return {
+            updatedGeofenceStops,
+            skippedGeofenceStops,
+        };
+    }
+
+    const coordinates = resolveGpsCoordinates(gps);
+    const gpsTimestamp = resolveGpsTimestamp(gps);
+    const customsStopsByCode = buildCustomsStopsByCode(dbStops);
+    const geofences = await getCustomsGeofencesContainingPoint(coordinates);
+    const insideStopCodes = new Set(geofences.map((geofence) => geofence.stop_code));
+
+    for (const stopCode of CUSTOMS_STOP_CODES) {
+        const dbStop = customsStopsByCode.get(stopCode);
+        const crossStopId = getStopId(dbStop);
+
+        if (!crossStopId) {
+            continue;
+        }
+
+        try {
+            if (insideStopCodes.has(stopCode) && !hasValue(dbStop.actual_arrival)) {
+                await updateCrossCustomsStopTimes({
+                    cross_stop_id: crossStopId,
+                    actual_arrival: gpsTimestamp,
+                    actual_departure: null,
+                });
+
+                updatedGeofenceStops.push({
+                    cross_stop_id: crossStopId,
+                    stop_code: stopCode,
+                    action: 'ARRIVAL',
+                    actual_arrival: gpsTimestamp,
+                    geofences: geofences.filter((geofence) => geofence.stop_code === stopCode),
+                });
+            }
+
+            if (!insideStopCodes.has(stopCode) && hasValue(dbStop.actual_arrival) && !hasValue(dbStop.actual_departure)) {
+                await updateCrossCustomsStopTimes({
+                    cross_stop_id: crossStopId,
+                    actual_arrival: dbStop.actual_arrival,
+                    actual_departure: gpsTimestamp,
+                });
+
+                updatedGeofenceStops.push({
+                    cross_stop_id: crossStopId,
+                    stop_code: stopCode,
+                    action: 'DEPARTURE',
+                    actual_arrival: dbStop.actual_arrival,
+                    actual_departure: gpsTimestamp,
+                });
+            }
+        } catch (error) {
+            skippedGeofenceStops.push({
+                cross_stop_id: crossStopId,
+                stop_code: stopCode,
+                reason: error.message,
+            });
+        }
+    }
+
+    return {
+        updatedGeofenceStops,
+        skippedGeofenceStops,
     };
 
 };
@@ -413,16 +586,27 @@ export const persistActiveCrossesUpdate = async ({ items = [] } = {}) => {
                 crossId,
                 stops,
             });
-            const estimatedCustomsResult = await updateEstimatedCustomsTimesForCross({
-                stops,
-                dbStops: item.dbDetail?.stops || [],
+            const refreshedDetail = await getCrossDetailById(crossId);
+            const dbStops = refreshedDetail?.stops || item.dbDetail?.stops || [];
+            const geofenceCustomsResult = await updateCustomsTimesFromGeofenceForCross({
+                dbStops,
+                gps,
             });
+            const estimatedCustomsResult = geofenceCustomsResult.updatedGeofenceStops.length
+                ? {
+                    updatedEstimatedStops: [],
+                    skippedEstimatedStops: [],
+                }
+                : await updateEstimatedCustomsTimesForCross({
+                    stops,
+                    dbStops,
+                });
             const assignmentsResult = await upsertAssignmentsForCross({
                 crossId,
                 orderId,
                 assignments,
                 stops,
-                dbStops: item.dbDetail?.stops || [],
+                dbStops,
             });
 
             results.push({
@@ -435,6 +619,8 @@ export const persistActiveCrossesUpdate = async ({ items = [] } = {}) => {
                 deletedStaleCustomsCount: Number(staleStopsResult.deleted_customs_count || 0),
                 updatedEstimatedCustomsStopsCount: estimatedCustomsResult.updatedEstimatedStops.length,
                 skippedEstimatedCustomsStopsCount: estimatedCustomsResult.skippedEstimatedStops.length,
+                updatedGeofenceCustomsStopsCount: geofenceCustomsResult.updatedGeofenceStops.length,
+                skippedGeofenceCustomsStopsCount: geofenceCustomsResult.skippedGeofenceStops.length,
                 upsertedAssignmentsCount: assignmentsResult.upsertedAssignments.length,
                 skippedAssignmentsCount: assignmentsResult.skippedAssignments.length,
                 activeStopEta: stopsEtaResult.activeStopEta,
@@ -442,6 +628,8 @@ export const persistActiveCrossesUpdate = async ({ items = [] } = {}) => {
                 skippedStops: stopsResult.skippedStops,
                 updatedEstimatedCustomsStops: estimatedCustomsResult.updatedEstimatedStops,
                 skippedEstimatedCustomsStops: estimatedCustomsResult.skippedEstimatedStops,
+                updatedGeofenceCustomsStops: geofenceCustomsResult.updatedGeofenceStops,
+                skippedGeofenceCustomsStops: geofenceCustomsResult.skippedGeofenceStops,
                 skippedAssignments: assignmentsResult.skippedAssignments,
             });
         } catch (error) {
@@ -467,6 +655,8 @@ export const persistActiveCrossesUpdate = async ({ items = [] } = {}) => {
         deletedStaleCustomsCount: results.reduce((total, result) => total + result.deletedStaleCustomsCount, 0),
         updatedEstimatedCustomsStopsCount: results.reduce((total, result) => total + result.updatedEstimatedCustomsStopsCount, 0),
         skippedEstimatedCustomsStopsCount: results.reduce((total, result) => total + result.skippedEstimatedCustomsStopsCount, 0),
+        updatedGeofenceCustomsStopsCount: results.reduce((total, result) => total + result.updatedGeofenceCustomsStopsCount, 0),
+        skippedGeofenceCustomsStopsCount: results.reduce((total, result) => total + result.skippedGeofenceCustomsStopsCount, 0),
         upsertedAssignmentsCount: results.reduce((total, result) => total + result.upsertedAssignmentsCount, 0),
         skippedAssignmentsCount: results.reduce((total, result) => total + result.skippedAssignmentsCount, 0),
         results,
