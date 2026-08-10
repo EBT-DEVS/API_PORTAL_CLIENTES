@@ -87,6 +87,26 @@ const buildPayloadsByOrderId = (payloads = []) => (
     }, new Map())
 );
 
+const preserveActiveCrossPriority = ({ crossPayload, activeCross }) => {
+
+    if (!crossPayload?.cross || !activeCross?.priority_id) {
+        return crossPayload;
+    }
+
+    return {
+        ...crossPayload,
+        cross: {
+            ...crossPayload.cross,
+            priority_id: activeCross.priority_id,
+        },
+        _priorityResolution: {
+            priorityId: activeCross.priority_id,
+            reason: 'preserved_active_cross_priority',
+        },
+    };
+
+};
+
 const buildDbVirtualStopsByCode = (stops = []) => (
     stops.reduce((map, stop) => {
         const stopCode = normalizeCode(stop?.stop_code || stop?.code);
@@ -121,7 +141,8 @@ const mergeDbVirtualStopTimes = ({ payload, dbStops = [] }) => {
                 ...stop,
                 actual_arrival: firstValue(stop.actual_arrival, dbStop.actual_arrival),
                 actual_departure: firstValue(stop.actual_departure, dbStop.actual_departure),
-                is_completed: firstValue(stop.is_completed, dbStop.is_completed, 0),
+                arrival_status: firstValue(dbStop.arrival_status, stop.arrival_status),
+                is_completed: firstValue(dbStop.is_completed, stop.is_completed, 0),
                 _cross_stop_id: dbStop.id || dbStop.cross_stop_id || null,
                 _merged_from_db: true,
             };
@@ -275,7 +296,10 @@ export const buildActiveCrossesUpdatePayloads = async ({
             order,
             crossPayload: applyCanceledStatusFromOrder({
                 order,
-                crossPayload: crossesByOrderId.get(orderId) || null,
+                crossPayload: preserveActiveCrossPriority({
+                    crossPayload: crossesByOrderId.get(orderId) || null,
+                    activeCross,
+                }),
             }),
             stopsPayload: stopsByOrderId.get(orderId) || null,
             assignmentPayload: assignmentsByOrderId.get(orderId) || null,

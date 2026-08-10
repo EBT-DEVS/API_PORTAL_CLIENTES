@@ -195,8 +195,8 @@ const compactConsecutiveDuplicateStops = (stops = []) => {
 
             compactedStops[compactedStops.length - 1] = {
                 ...previousStop,
-                actual_departure: stop.actual_departure,
-                is_completed: stop.actual_departure ? 1 : 0,
+                actual_departure: firstValue(stop.actual_departure, previousStop.actual_departure),
+                is_completed: firstValue(stop.actual_departure, previousStop.actual_departure) ? 1 : 0,
                 arrival_status: resolveArrivalStatus({
                     schedArrive: previousStop.sched_arrive,
                     actualArrival: previousStop.actual_arrival,
@@ -248,7 +248,7 @@ const buildCrossStopPayload = ({ stop, sequence, order }) => {
         stop_name: firstValue(stop?.location_name, stop?.name),
         latitude: toNumberOrNull(stop?.latitude),
         longitude: toNumberOrNull(stop?.longitude),
-        eta: normalizeDateTime(stop?.eta),
+        eta: null,
         sched_arrive: schedArrive,
         actual_arrival: actualArrival,
         actual_departure: actualDeparture,
@@ -274,7 +274,7 @@ const buildVirtualCrossStopPayload = ({ virtualStop, sequence, order }) => ({
     stop_name: virtualStop.stop_name,
     latitude: toNumberOrNull(virtualStop.latitude),
     longitude: toNumberOrNull(virtualStop.longitude),
-    eta: normalizeDateTime(virtualStop.eta),
+    eta: null,
     sched_arrive: normalizeDateTime(virtualStop.sched_arrive),
     actual_arrival: null,
     actual_departure: null,

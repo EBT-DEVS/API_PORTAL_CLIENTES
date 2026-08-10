@@ -1,6 +1,8 @@
 import { insertCrossAssignmentIgnore } from '../../models/crosses/crosses.assignments.model.js';
 import { insertCrossIgnore } from '../../models/crosses/crosses.model.js';
 import { insertCrossStopIgnore } from '../../models/crosses/crosses.stops.model.js';
+import { getTrailerData } from '../../models/db_gps/trailers.model.js';
+import { enrichActiveStopEtaFromPcMiller } from './crossesPcMillerEta.service.js';
 
 const getOrderId = (payload) => (
     payload?._mcleod_order_id
@@ -11,6 +13,10 @@ const getOrderId = (payload) => (
 
 const toKey = (value) => (
     value == null ? null : String(value)
+);
+
+const firstValue = (...values) => (
+    values.find((value) => value !== undefined && value !== null && value !== '') ?? null
 );
 
 const getPayloadsByOrderId = (payloads = []) => (
@@ -164,6 +170,36 @@ const insertAssignmentsForCross = async ({
 
 };
 
+const enrichStopsEta = async ({ stops = [], gps = null } = {}) => {
+
+    try {
+        return await enrichActiveStopEtaFromPcMiller({
+            stops,
+            gps,
+        });
+    } catch (error) {
+        return {
+            stops: stops.map((stop) => ({
+                ...stop,
+                eta: null,
+            })),
+            activeStopEta: null,
+            skippedReason: error.message,
+        };
+    }
+
+};
+
+const getGpsForTrailer = async (trailerId) => {
+
+    if (!trailerId) {
+        return null;
+    }
+
+    return getTrailerData(trailerId);
+
+};
+
 export const persistInitialCrosses = async ({
     crossPayloads = [],
     stopsPayloads = [],
@@ -201,10 +237,19 @@ export const persistInitialCrosses = async ({
 
             const stopsPayload = stopsPayloadsByOrderId.get(orderId) || { stops: [] };
             const assignmentPayload = assignmentPayloadsByOrderId.get(orderId) || { assignments: [] };
+            const gps = await getGpsForTrailer(firstValue(
+                crossPayload.cross.trailer_id,
+                cross.trailer_id,
+                cross.caja,
+            ));
+            const stopsEtaResult = await enrichStopsEta({
+                stops: stopsPayload.stops || [],
+                gps,
+            });
             const stopsResult = await insertStopsForCross({
                 cross,
                 orderId,
-                stops: stopsPayload.stops || [],
+                stops: stopsEtaResult.stops || [],
             });
             const assignmentsResult = await insertAssignmentsForCross({
                 cross,
@@ -221,6 +266,8 @@ export const persistInitialCrosses = async ({
                 skippedStopsCount: stopsResult.skippedStops.length,
                 assignmentsCount: assignmentsResult.insertedAssignments.length,
                 skippedAssignmentsCount: assignmentsResult.skippedAssignments.length,
+                activeStopEta: stopsEtaResult.activeStopEta,
+                skippedActiveStopEtaReason: stopsEtaResult.skippedReason,
                 skippedStops: stopsResult.skippedStops,
                 skippedAssignments: assignmentsResult.skippedAssignments,
             });
@@ -239,6 +286,8 @@ export const persistInitialCrosses = async ({
         skippedCrossesCount: skippedCrosses.length,
         persistedStopsCount: results.reduce((total, result) => total + result.stopsCount, 0),
         skippedStopsCount: results.reduce((total, result) => total + result.skippedStopsCount, 0),
+        activeStopEtasCount: results.filter((result) => result.activeStopEta).length,
+        skippedActiveStopEtasCount: results.filter((result) => result.skippedActiveStopEtaReason).length,
         persistedAssignmentsCount: results.reduce((total, result) => total + result.assignmentsCount, 0),
         skippedAssignmentsCount: results.reduce((total, result) => total + result.skippedAssignmentsCount, 0),
         results,

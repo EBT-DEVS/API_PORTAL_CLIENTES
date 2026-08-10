@@ -27,6 +27,10 @@ const envData = {
         user     : process.env.MCLEOD_API_USER,
         password : process.env.MCLEOD_API_PASS,
     },
+    pcMiller: {
+        url   : process.env.PC_MILLER_API_URL,
+        token : process.env.PC_MILLER_API_TOKEN,
+    },
     cron: {
         timezone: process.env.CRON_TIMEZONE,
         crossings: {

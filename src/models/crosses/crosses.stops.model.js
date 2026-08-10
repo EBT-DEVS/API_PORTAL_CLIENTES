@@ -1,4 +1,4 @@
-import { executeSp } from '../../config/db/db.portal.config.js';
+import pool, { executeSp } from '../../config/db/db.portal.config.js';
 
 const getFirstRow = (resultSets = []) => (
     resultSets.find((resultSet) => Array.isArray(resultSet) && resultSet.length)?.[0] || null
@@ -58,6 +58,50 @@ export const updateCrossStopTimes = async ({
         cross_stop_id,
         actual_arrival,
         actual_departure,
+    };
+
+};
+
+export const updateCrossCustomsStopTimes = async ({
+    cross_stop_id,
+    actual_arrival = null,
+    actual_departure = null,
+} = {}) => {
+
+    const arrivalStatus = actual_departure
+        ? 'ON_TIME'
+        : actual_arrival
+            ? 'UNKNOWN'
+            : 'PENDING';
+    const isCompleted = actual_departure ? 1 : 0;
+
+    await pool.execute(
+        `
+            UPDATE cross_stops
+            SET
+                actual_arrival = ?,
+                actual_departure = ?,
+                arrival_status = ?,
+                is_completed = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+              AND stop_code IN ('MX_CUSTOMS', 'US_CUSTOMS')
+        `,
+        [
+            actual_arrival,
+            actual_departure,
+            arrivalStatus,
+            isCompleted,
+            cross_stop_id,
+        ]
+    );
+
+    return {
+        cross_stop_id,
+        actual_arrival,
+        actual_departure,
+        arrival_status: arrivalStatus,
+        is_completed: isCompleted,
     };
 
 };

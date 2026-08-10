@@ -123,11 +123,32 @@ const emailNotificationHandler = async (notification) => {
         };
     }
 
+    const response = await sendEmail({
+        destinatarios,
+        asunto: EMAIL_SUBJECT,
+        html,
+    });
+
+    return {
+        channel: 'EMAIL',
+        status: 'SENT',
+        destinatarios,
+        response,
+    };
+
+};
+
+export const sendEmail = async ({
+    destinatarios = [],
+    asunto = EMAIL_SUBJECT,
+    html,
+} = {}) => {
+
     const response = await axios.post(
         EMAIL_ENDPOINT,
         {
             destinatarios,
-            asunto: EMAIL_SUBJECT,
+            asunto,
             html,
         },
         {
@@ -137,13 +158,7 @@ const emailNotificationHandler = async (notification) => {
         }
     );
 
-    return {
-        channel: 'EMAIL',
-        status: 'SENT',
-        destinatarios,
-        response: response.data,
-    };
-
+    return response.data;
 };
 
 const CHANNEL_HANDLERS = {

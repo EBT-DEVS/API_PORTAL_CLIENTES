@@ -1,5 +1,5 @@
 import { upsertCrossCustoms } from '../../models/crosses/crosses.customs.model.js';
-import { getActiveCrossesData, getCrossDetailById } from '../../models/crosses/crosses.model.js';
+import { getActiveCrossesData, getCrossDetailById, updateCrossPriority } from '../../models/crosses/crosses.model.js';
 import { updateCrossStopTimes } from '../../models/crosses/crosses.stops.model.js';
 import { getTrailerData } from '../../models/db_gps/trailers.model.js';
 
@@ -182,6 +182,48 @@ export const getCrossDetail = async (req, res, next) => {
         return res.json({
             success: true,
             data: crossDetail,
+        });
+    } catch (error) {
+        return next(error);
+    }
+
+};
+
+export const updateCrossPriorityById = async (req, res, next) => {
+
+    try {
+        const crossId = Number(req.params.crossId);
+        const priorityId = normalizeNullablePositiveInteger(req.body?.priority_id ?? req.body?.priorityId);
+
+        if (!Number.isInteger(crossId) || crossId <= 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'crossId invalido',
+            });
+        }
+
+        if (Number.isNaN(priorityId) || !priorityId) {
+            return res.status(400).json({
+                success: false,
+                message: 'priority_id invalido',
+            });
+        }
+
+        const cross = await updateCrossPriority({
+            cross_id: crossId,
+            priority_id: priorityId,
+        });
+
+        if (!cross) {
+            return res.status(404).json({
+                success: false,
+                message: 'Cruce no encontrado',
+            });
+        }
+
+        return res.json({
+            success: true,
+            data: cross,
         });
     } catch (error) {
         return next(error);

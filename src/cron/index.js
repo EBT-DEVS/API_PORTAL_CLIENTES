@@ -1,4 +1,5 @@
 import { startCrossesInitCron, startCrossesUpdateCron } from './crosses.cron.js';
+import { startColombiaYardExitNotificationsCron } from './colombiaYardExitNotifications.cron.js';
 import { startNotificationsCron } from './notifications.cron.js';
 import env from '../config/env/env.config.js';
 
@@ -17,6 +18,7 @@ export const startCronScheduler = () => {
 
     if (isEnabled(env.cron.notifications.enabled)) {
         startNotificationsCron();
+        startColombiaYardExitNotificationsCron();
     } else {
         console.log('[cron] notifications deshabilitado');
     }
