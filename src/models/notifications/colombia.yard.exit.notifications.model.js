@@ -43,6 +43,10 @@ export const getColombiaYardExitNotificationFallbackCandidates = async () => {
             origin_stop.sequence AS origin_sequence,
             origin_stop.stop_code AS origin_stop_code,
             origin_stop.stop_name AS origin_stop_name,
+            departure_stop.id AS departure_stop_id,
+            departure_stop.sequence AS departure_sequence,
+            departure_stop.stop_code AS departure_stop_code,
+            departure_stop.stop_name AS departure_stop_name,
             destination_stop.id AS destination_stop_id,
             destination_stop.sequence AS destination_sequence,
             destination_stop.stop_code AS destination_stop_code,
@@ -66,6 +70,18 @@ export const getColombiaYardExitNotificationFallbackCandidates = async () => {
         INNER JOIN cross_stops origin_stop
             ON origin_stop.cross_id = c.id
            AND origin_stop.sequence = first_stop.origin_sequence
+        INNER JOIN (
+            SELECT
+                cross_id,
+                MIN(sequence) AS first_customs_sequence
+            FROM cross_stops
+            WHERE stop_code IN ('MX_CUSTOMS', 'US_CUSTOMS')
+            GROUP BY cross_id
+        ) first_customs
+            ON first_customs.cross_id = c.id
+        INNER JOIN cross_stops departure_stop
+            ON departure_stop.cross_id = c.id
+           AND departure_stop.sequence = first_customs.first_customs_sequence - 1
         INNER JOIN (
             SELECT
                 cross_id,
