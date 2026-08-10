@@ -1,15 +1,14 @@
 import cron from 'node-cron';
 
-import env from '../config/env/env.config.js';
 import { runColombiaYardExitNotificationJob } from '../jobs/notifications/colombiaYardExitNotification.job.js';
 
 const DEFAULT_SCHEDULE = '*/5 * * * *';
+const TIMEZONE = 'America/Matamoros';
 
 let isRunning = false;
 
 export const startColombiaYardExitNotificationsCron = () => {
 
-    const timezone = env.cron.timezone || 'America/Chicago';
     const schedule = DEFAULT_SCHEDULE;
 
     if (!cron.validate(schedule)) {
@@ -34,9 +33,9 @@ export const startColombiaYardExitNotificationsCron = () => {
                 isRunning = false;
             }
         },
-        { timezone }
+        { timezone: TIMEZONE }
     );
 
-    console.log(`[cron] colombia yard exit notifications activo (${schedule}, ${timezone})`);
+    console.log(`[cron] colombia yard exit notifications activo (${schedule}, ${TIMEZONE})`);
 
 };
