@@ -7,7 +7,16 @@ const isEnabled = (value) => (
     ['1', 'true', 'yes', 'y'].includes(String(value).trim().toLowerCase())
 );
 
+const isProduction = () => (
+    String(env.nodeEnv || '').trim().toLowerCase() === 'production'
+);
+
 export const startCronScheduler = () => {
+
+    if (!isProduction()) {
+        console.log(`[cron] deshabilitado para NODE_ENV=${env.nodeEnv || 'development'}`);
+        return;
+    }
 
     if (isEnabled(env.cron.crossings.enabled)) {
         startCrossesInitCron();

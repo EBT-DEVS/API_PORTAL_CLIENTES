@@ -228,3 +228,45 @@ export const createNotificationSubscription = async (payload) => {
     }
 
 };
+
+export const getNotificationSubscriptions = async ({
+    id = null,
+    customerCode = null,
+    channel = null,
+    frequency = null,
+    isActive = null,
+} = {}) => {
+
+    const connection = await pool.getConnection();
+
+    try {
+        const resultSets = await executeSpWithConnection(connection, 'sp_notification_subscriptions_get', [
+            id,
+            customerCode,
+            channel,
+            frequency,
+            isActive,
+        ]);
+
+        return getFirstResultSet(resultSets);
+    } finally {
+        connection.release();
+    }
+
+};
+
+export const deactivateNotificationSubscriptionById = async (id) => {
+
+    const connection = await pool.getConnection();
+
+    try {
+        const resultSets = await executeSpWithConnection(connection, 'sp_notification_subscription_deactivate', [
+            id,
+        ]);
+
+        return getFirstRow(resultSets);
+    } finally {
+        connection.release();
+    }
+
+};

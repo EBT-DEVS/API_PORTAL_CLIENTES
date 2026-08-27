@@ -1,13 +1,17 @@
 import { getCrossDetailById } from '../../models/crosses/crosses.model.js';
 import { getTrailerData } from '../../models/db_gps/trailers.model.js';
+import { getNotificationReasons } from '../../models/catalogs/notification.reasons.model.js';
 import {
     deactivateNotificationSubscription,
     getActiveNotificationSubscriptions,
     markNotificationSubscriptionSent,
 } from '../../models/notifications/notification.cron.model.js';
+import { insertNotificationDispatchLog } from '../../models/notifications/notification.dispatch.logs.model.js';
 import { dispatchNotificationByChannel } from './notificationChannelDispatcher.service.js';
 
 const FINAL_CROSS_STATUS_IDS = new Set([12, 13]);
+const TRACKING_REASON_CODE = 'TRACKING';
+const TRACKING_EMAIL_SUBJECT = 'Tracking - EBT';
 
 const parseJsonField = (value, fallback) => {
 
@@ -92,6 +96,64 @@ const formatCrosses = (crossDetails = []) => (
     }))
 );
 
+const resolveCustomerGroupId = (crossDetails = []) => (
+    crossDetails
+        .map((detail) => detail?.cross?.customer_group_id)
+        .find((customerGroupId) => customerGroupId !== undefined && customerGroupId !== null)
+    ?? null
+);
+
+const resolveNotificationChannelId = (subscription) => (
+    subscription?.notification_channel?.id
+    ?? subscription?.notification_channel_id
+    ?? null
+);
+
+const resolveNotificationChannelCode = (subscription) => (
+    subscription?.notification_channel?.code
+    ?? subscription?.notification_channel_code
+    ?? null
+);
+
+const resolveRecipientValues = (notification) => (
+    notification.recipients
+        .map((recipient) => recipient?.recipient_value)
+        .filter(Boolean)
+);
+
+const getTrackingReason = async () => {
+
+    const reasons = await getNotificationReasons({
+        name: 'Tracking',
+        isActive: 1,
+    });
+
+    return reasons.find((reason) => reason.code === TRACKING_REASON_CODE) || null;
+
+};
+
+const saveTrackingDispatchLog = async ({
+    subscription,
+    crossDetails,
+    notification,
+    status,
+} = {}) => {
+
+    const reason = await getTrackingReason();
+
+    return insertNotificationDispatchLog({
+        notification_reason_id: reason?.id || null,
+        notification_channel_id: resolveNotificationChannelId(subscription),
+        customer_group_id: resolveCustomerGroupId(crossDetails),
+        entity_id: subscription.id,
+        subject: TRACKING_EMAIL_SUBJECT,
+        recipients_json: JSON.stringify(resolveRecipientValues(notification)),
+        status,
+        sent_at: new Date(),
+    });
+
+};
+
 const enrichCrossDetailsWithGps = async (crossDetails = []) => {
 
     const enrichedCrosses = [];
@@ -157,7 +219,35 @@ const processSubscription = async (subscription) => {
 
     const enrichedCrossDetails = await enrichCrossDetailsWithGps(crossDetails);
     const notification = formatNotificationForChannel(subscription, enrichedCrossDetails);
-    const dispatchResult = await dispatchNotificationByChannel(notification);
+    let dispatchResult = null;
+
+    try {
+        dispatchResult = await dispatchNotificationByChannel(notification);
+    } catch (error) {
+        const log = await saveTrackingDispatchLog({
+            subscription,
+            crossDetails: enrichedCrossDetails,
+            notification,
+            status: 'FAILED',
+        });
+
+        return {
+            subscription_id: subscription.id,
+            status: 'ERROR',
+            error: error.message,
+            log,
+        };
+    }
+
+    const shouldLogDispatch = ['SENT', 'SKIPPED'].includes(dispatchResult.status);
+    const log = shouldLogDispatch
+        ? await saveTrackingDispatchLog({
+            subscription,
+            crossDetails: enrichedCrossDetails,
+            notification,
+            status: dispatchResult.status,
+        })
+        : null;
 
     if (dispatchResult.status === 'SENT') {
         await markNotificationSubscriptionSent(subscription.id);
@@ -166,7 +256,10 @@ const processSubscription = async (subscription) => {
     return {
         subscription_id: subscription.id,
         status: 'DISPATCHED_TO_CHANNEL',
+        notification_reason_code: TRACKING_REASON_CODE,
+        notification_channel_code: resolveNotificationChannelCode(subscription),
         dispatch: dispatchResult,
+        log,
     };
 
 };

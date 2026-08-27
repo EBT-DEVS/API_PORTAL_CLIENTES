@@ -4,5 +4,7 @@ import * as ctrNotificationRecipients from '../../controllers/catalogs/notificat
 const router = Router();
 
 router.get('/', ctrNotificationRecipients.getCatNotificationRecipients);
+router.post('/', ctrNotificationRecipients.createCatNotificationRecipient);
+router.put('/:id', ctrNotificationRecipients.updateCatNotificationRecipient);
 
 export default router;

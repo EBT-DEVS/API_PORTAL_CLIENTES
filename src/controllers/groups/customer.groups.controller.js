@@ -1,4 +1,8 @@
-import { getCustomerGroups } from '../../models/groups/customer.groups.model.js';
+import {
+    getCustomerGroups,
+    insertCustomerGroup,
+    updateCustomerGroup,
+} from '../../models/groups/customer.groups.model.js';
 
 const normalizeNullableNumber = (value) => {
 
@@ -44,11 +48,19 @@ const normalizeNullableString = (value) => {
 
 };
 
+const normalizeRequiredString = (value) => {
+
+    const normalizedValue = normalizeNullableString(value);
+
+    return normalizedValue || null;
+
+};
+
 export const getCustomerGroupsData = async (req, res, next) => {
 
     try {
         const id = normalizeNullableNumber(req.query?.id);
-        const code = normalizeNullableString(req.query?.code);
+        const name = normalizeNullableString(req.query?.name);
         const isActive = normalizeNullableBooleanNumber(req.query?.is_active ?? req.query?.isActive);
 
         if (Number.isNaN(id)) {
@@ -67,13 +79,112 @@ export const getCustomerGroupsData = async (req, res, next) => {
 
         const groups = await getCustomerGroups({
             id,
-            code,
+            name,
             isActive,
         });
 
         return res.json({
             success: true,
             data: groups,
+        });
+    } catch (error) {
+        return next(error);
+    }
+
+};
+
+export const createCustomerGroup = async (req, res, next) => {
+
+    try {
+        const body = req.body || {};
+        const code = normalizeRequiredString(body.code);
+        const name = normalizeRequiredString(body.name);
+        const isActive = normalizeNullableBooleanNumber(body.is_active ?? body.isActive);
+
+        if (!code) {
+            return res.status(400).json({
+                success: false,
+                message: 'code es requerido',
+            });
+        }
+
+        if (!name) {
+            return res.status(400).json({
+                success: false,
+                message: 'name es requerido',
+            });
+        }
+
+        if (Number.isNaN(isActive)) {
+            return res.status(400).json({
+                success: false,
+                message: 'is_active invalido',
+            });
+        }
+
+        const group = await insertCustomerGroup({
+            code,
+            name,
+            isActive,
+        });
+
+        return res.status(201).json({
+            success: true,
+            data: group,
+        });
+    } catch (error) {
+        return next(error);
+    }
+
+};
+
+export const editCustomerGroup = async (req, res, next) => {
+
+    try {
+        const id = normalizeNullableNumber(req.params?.id);
+        const body = req.body || {};
+        const code = normalizeRequiredString(body.code);
+        const name = normalizeRequiredString(body.name);
+        const isActive = normalizeNullableBooleanNumber(body.is_active ?? body.isActive);
+
+        if (Number.isNaN(id) || !id) {
+            return res.status(400).json({
+                success: false,
+                message: 'id invalido',
+            });
+        }
+
+        if (!code) {
+            return res.status(400).json({
+                success: false,
+                message: 'code es requerido',
+            });
+        }
+
+        if (!name) {
+            return res.status(400).json({
+                success: false,
+                message: 'name es requerido',
+            });
+        }
+
+        if (Number.isNaN(isActive)) {
+            return res.status(400).json({
+                success: false,
+                message: 'is_active invalido',
+            });
+        }
+
+        const group = await updateCustomerGroup({
+            id,
+            code,
+            name,
+            isActive,
+        });
+
+        return res.json({
+            success: true,
+            data: group,
         });
     } catch (error) {
         return next(error);
