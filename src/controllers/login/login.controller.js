@@ -82,6 +82,7 @@ export const authenticatePortalClient = async (req, res, next) => {
             email: user.email,
             customer_code: user.customer_code,
             customer_name: user.customer_name,
+            portal_groud_id: user.portal_groud_id
         };
         const token = signPortalClientToken(payload);
 

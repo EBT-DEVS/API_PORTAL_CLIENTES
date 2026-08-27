@@ -88,6 +88,19 @@ const findStopByCode = (stops, code) => (
     stops.find((stop) => normalizeCode(stop.stop_code) === code) || null
 );
 
+const isEbtYardStop = (stop) => (
+    ['EBT_YARD', 'EBT YARD'].includes(normalizeCode(stop?.stop_code))
+    || normalizeCode(stop?.stop_name) === 'EBT YARD'
+);
+
+const findNextStop = (stops, currentStop) => {
+
+    const currentIndex = stops.findIndex((stop) => stop === currentStop);
+
+    return currentIndex >= 0 ? stops[currentIndex + 1] || null : null;
+
+};
+
 const hasCustomsStop = (stops = []) => (
     stops.some((stop) => ['MX_CUSTOMS', 'US_CUSTOMS'].includes(normalizeCode(stop.stop_code)))
 );
@@ -161,6 +174,7 @@ export const deriveCrossStatusCode = (stops = []) => {
     const lastStop = sortedStops[sortedStops.length - 1] || null;
     const mxCustoms = findStopByCode(sortedStops, 'MX_CUSTOMS');
     const usCustoms = findStopByCode(sortedStops, 'US_CUSTOMS');
+    const stopAfterUsCustoms = usCustoms ? findNextStop(sortedStops, usCustoms) : null;
     const firstTxStop = findFirstRealTxStop(sortedStops);
 
     if (!firstStop || !lastStop) {
@@ -203,6 +217,13 @@ export const deriveCrossStatusCode = (stops = []) => {
             return {
                 statusCode: 'AT_US_CUSTOMS',
                 reason: 'us_customs_arrived_not_departed',
+            };
+        }
+
+        if (stopAfterUsCustoms && !isEbtYardStop(stopAfterUsCustoms) && !hasValue(stopAfterUsCustoms.actual_arrival)) {
+            return {
+                statusCode: 'IN_TRANSIT_TO_CUSTOMER',
+                reason: 'us_customs_departed_before_non_ebt_next_stop_arrival',
             };
         }
 
@@ -267,6 +288,13 @@ export const deriveCrossStatusCode = (stops = []) => {
         return {
             statusCode: 'AT_US_CUSTOMS',
             reason: 'us_customs_arrived_not_departed',
+        };
+    }
+
+    if (stopAfterUsCustoms && !isEbtYardStop(stopAfterUsCustoms) && !hasValue(stopAfterUsCustoms.actual_arrival)) {
+        return {
+            statusCode: 'IN_TRANSIT_TO_CUSTOMER',
+            reason: 'us_customs_departed_before_non_ebt_next_stop_arrival',
         };
     }
 

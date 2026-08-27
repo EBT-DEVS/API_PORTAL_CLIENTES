@@ -1,8 +1,8 @@
 import { upsertCurrentCrossAssignment } from '../../models/crosses/crosses.assignments.model.js';
 import { getCrossDetailById, updateCrossFromMcleod } from '../../models/crosses/crosses.model.js';
-import { deleteUnreferencedCrossStopsAfterSequence, updateCrossCustomsStopTimes, upsertCrossStopSync } from '../../models/crosses/crosses.stops.model.js';
-import { getCustomsGeofencesContainingPoint } from '../../models/db_gps/geofences.model.js';
+import { deleteUnreferencedCrossStopsAfterSequence, updateCrossSpecialStopGeofenceTimes, upsertCrossStopSync } from '../../models/crosses/crosses.stops.model.js';
 import { getTrailerData } from '../../models/db_gps/trailers.model.js';
+import { getTkGeofenceEvents } from '../../models/db_gps/tk.events.model.js';
 import { enrichActiveStopEtaFromPcMiller } from './crossesPcMillerEta.service.js';
 
 const toKey = (value) => (
@@ -14,6 +14,22 @@ const normalizeCode = (value) => (
 );
 
 const CUSTOMS_STOP_CODES = new Set(['MX_CUSTOMS', 'US_CUSTOMS']);
+const GEOFENCE_EVENT_STOP_CODES = new Set(['MX_CUSTOMS', 'US_CUSTOMS', 'EBT_YARD']);
+const SPECIAL_GEOFENCE_STOP_CODES = new Set(['PENSIEBT', 'MX_CUSTOMS', 'US_CUSTOMS', 'EBT_YARD']);
+const INFERRED_FROM_GEOFENCE_SOURCE = 'GPS_GEOFENCE';
+const SPECIAL_GEOFENCES_BY_STOP_CODE = {
+    MX_CUSTOMS: [
+        'Aduana 240, Mex',
+        'ADUANA MEXICANA COLOMBIA',
+    ],
+    US_CUSTOMS: [
+        'Aduana Americana 240',
+        'Aduana Americana Colombia Exportacion',
+    ],
+    EBT_YARD: [
+        'EBT Torre',
+    ],
+};
 
 const firstValue = (...values) => (
     values.find((value) => value !== undefined && value !== null && value !== '') ?? null
@@ -31,31 +47,9 @@ const buildDbStopsBySequence = (stops = []) => (
     }, new Map())
 );
 
-const sortBySequence = (stops = []) => (
-    [...stops].sort((a, b) => Number(a.sequence || 0) - Number(b.sequence || 0))
-);
-
 const hasValue = (value) => (
     value !== undefined && value !== null && value !== ''
 );
-
-const toTimestamp = (value) => {
-
-    if (!hasValue(value)) {
-        return null;
-    }
-
-    if (value instanceof Date) {
-        const timestamp = value.getTime();
-
-        return Number.isFinite(timestamp) ? timestamp : null;
-    }
-
-    const timestamp = new Date(String(value).replace(' ', 'T')).getTime();
-
-    return Number.isFinite(timestamp) ? timestamp : null;
-
-};
 
 const toSqlDateTime = (timestamp) => {
 
@@ -78,28 +72,125 @@ const toSqlDateTime = (timestamp) => {
 
 };
 
-const findStopByCode = (stops = [], code) => (
-    stops.find((stop) => normalizeCode(stop?.stop_code) === code) || null
+const toUtcSqlDateTime = (value = new Date()) => {
+
+    const date = value instanceof Date ? value : new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+        return null;
+    }
+
+    const pad = (part) => String(part).padStart(2, '0');
+
+    return [
+        date.getUTCFullYear(),
+        pad(date.getUTCMonth() + 1),
+        pad(date.getUTCDate()),
+    ].join('-') + ' ' + [
+        pad(date.getUTCHours()),
+        pad(date.getUTCMinutes()),
+        pad(date.getUTCSeconds()),
+    ].join(':');
+
+};
+
+const toUtcStoredDateOrNull = (value) => {
+
+    if (!hasValue(value)) {
+        return null;
+    }
+
+    if (value instanceof Date) {
+        return new Date(Date.UTC(
+            value.getFullYear(),
+            value.getMonth(),
+            value.getDate(),
+            value.getHours(),
+            value.getMinutes(),
+            value.getSeconds(),
+        ));
+    }
+
+    const match = String(value).trim().match(
+        /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?/
+    );
+
+    if (!match) {
+        return null;
+    }
+
+    const [, year, month, day, hour = '00', minute = '00', second = '00'] = match;
+    const date = new Date(Date.UTC(
+        Number(year),
+        Number(month) - 1,
+        Number(day),
+        Number(hour),
+        Number(minute),
+        Number(second),
+    ));
+
+    return Number.isNaN(date.getTime()) ? null : date;
+
+};
+
+const toLocalSqlDateTime = (value) => {
+
+    if (!value) {
+        return null;
+    }
+
+    const date = value instanceof Date ? value : new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+        return null;
+    }
+
+    return toSqlDateTime(date.getTime());
+
+};
+
+const buildCurrentLocalDayUtcWindow = () => {
+
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+
+    return {
+        start: toUtcSqlDateTime(start),
+        end: toUtcSqlDateTime(end),
+    };
+
+};
+
+const resolveSpecialGeofenceStopCode = (stop) => {
+
+    const stopCode = normalizeCode(stop?.stop_code);
+
+    if (SPECIAL_GEOFENCE_STOP_CODES.has(stopCode)) {
+        return stopCode;
+    }
+
+    if (stopCode === 'EBT YARD' || normalizeCode(stop?.stop_name) === 'EBT YARD') {
+        return 'EBT_YARD';
+    }
+
+    return null;
+
+};
+
+const getSpecialStopUpdateCodes = (stopCode) => (
+    stopCode === 'EBT_YARD' ? ['EBT_YARD', 'EBT YARD'] : [stopCode]
 );
 
-const findPreviousRealStop = (stops = [], targetStop) => (
-    sortBySequence(stops)
-        .filter((stop) => Number(stop.sequence) < Number(targetStop?.sequence))
-        .reverse()
-        .find((stop) => !CUSTOMS_STOP_CODES.has(normalizeCode(stop?.stop_code))) || null
+const getSpecialStopUpdateNames = (stopCode) => (
+    stopCode === 'EBT_YARD' ? ['EBT YARD'] : []
 );
 
-const findNextRealStop = (stops = [], targetStop) => (
-    sortBySequence(stops)
-        .find((stop) => (
-            Number(stop.sequence) > Number(targetStop?.sequence)
-            && !CUSTOMS_STOP_CODES.has(normalizeCode(stop?.stop_code))
-        )) || null
-);
-
-const buildDbStopsByCode = (stops = []) => (
+const buildSpecialGeofenceStopsByCode = (stops = []) => (
     stops.reduce((map, stop) => {
-        const stopCode = normalizeCode(stop?.stop_code);
+        const stopCode = resolveSpecialGeofenceStopCode(stop);
 
         if (stopCode) {
             map.set(stopCode, stop);
@@ -109,152 +200,211 @@ const buildDbStopsByCode = (stops = []) => (
     }, new Map())
 );
 
-const toNumberOrNull = (value) => {
+const toLocalStoredDateOrNull = (value) => {
 
-    const numberValue = Number(value);
-    return Number.isFinite(numberValue) ? numberValue : null;
+    if (!hasValue(value)) {
+        return null;
+    }
+
+    const date = value instanceof Date
+        ? value
+        : new Date(String(value).replace(' ', 'T'));
+
+    return Number.isNaN(date.getTime()) ? null : date;
 
 };
 
-const isValidLatitude = (value) => (
-    Number.isFinite(value) && value >= -90 && value <= 90
+const isMcleodSource = (source) => (
+    normalizeCode(source || 'MCLEOD') === 'MCLEOD'
 );
 
-const isValidLongitude = (value) => (
-    Number.isFinite(value) && value >= -180 && value <= 180
+const isGeofenceSource = (source) => (
+    normalizeCode(source) === 'GPS_GEOFENCE'
 );
 
-const normalizeCoordinates = ({ latitude, longitude }) => {
+const addMinutes = (date, minutes) => (
+    new Date(date.getTime() + (minutes * 60 * 1000))
+);
 
-    if (isValidLatitude(latitude) && isValidLongitude(longitude)) {
-        return {
-            latitude,
-            longitude,
-        };
-    }
+const buildStopState = (stop) => {
 
-    if (isValidLatitude(longitude) && isValidLongitude(latitude)) {
-        return {
-            latitude: longitude,
-            longitude: latitude,
-        };
-    }
+    const shouldIgnoreArrival = isMcleodSource(stop?.actual_arrival_source);
+    const shouldIgnoreDeparture = isMcleodSource(stop?.actual_departure_source);
+    const actualArrival = shouldIgnoreArrival ? null : toLocalStoredDateOrNull(stop?.actual_arrival);
+    const actualDeparture = shouldIgnoreDeparture ? null : toLocalStoredDateOrNull(stop?.actual_departure);
 
     return {
-        latitude,
-        longitude,
+        stop,
+        crossStopId: getStopId(stop),
+        actualArrival,
+        actualArrivalSql: toLocalSqlDateTime(actualArrival),
+        actualArrivalSource: shouldIgnoreArrival
+            ? INFERRED_FROM_GEOFENCE_SOURCE
+            : stop?.actual_arrival_source || INFERRED_FROM_GEOFENCE_SOURCE,
+        actualArrivalSourceRecordId: shouldIgnoreArrival ? null : stop?.actual_arrival_source_record_id || null,
+        actualDeparture,
+        actualDepartureSql: toLocalSqlDateTime(actualDeparture),
+        actualDepartureSource: shouldIgnoreDeparture
+            ? INFERRED_FROM_GEOFENCE_SOURCE
+            : stop?.actual_departure_source || INFERRED_FROM_GEOFENCE_SOURCE,
+        actualDepartureSourceRecordId: shouldIgnoreDeparture ? null : stop?.actual_departure_source_record_id || null,
     };
 
 };
 
-const resolveGpsCoordinates = (gps) => normalizeCoordinates({
-    latitude: toNumberOrNull(firstValue(
-        gps?.latitude,
-        gps?.lat,
-        gps?.Latitud,
-        gps?.latitud,
-    )),
-    longitude: toNumberOrNull(firstValue(
-        gps?.longitude,
-        gps?.lng,
-        gps?.lon,
-        gps?.Longitud,
-        gps?.longitud,
-    )),
-});
+const setStateTimes = ({
+    state,
+    actualArrivalDate,
+    actualArrivalSourceRecordId = null,
+    actualDepartureDate = null,
+    actualDepartureSourceRecordId = null,
+} = {}) => {
 
-const resolveGpsTimestamp = (gps) => (
-    toSqlDateTime(toTimestamp(firstValue(
-        gps?.position_date,
-        gps?.positionDate,
-        gps?.created_at,
-        gps?.createdAt,
-    )) || Date.now())
-);
-
-const hasGpsCoordinates = (gps) => {
-
-    const coordinates = resolveGpsCoordinates(gps);
-
-    return isValidLatitude(coordinates.latitude) && isValidLongitude(coordinates.longitude);
+    state.actualArrival = actualArrivalDate;
+    state.actualArrivalSql = toLocalSqlDateTime(actualArrivalDate);
+    state.actualArrivalSource = INFERRED_FROM_GEOFENCE_SOURCE;
+    state.actualArrivalSourceRecordId = actualArrivalSourceRecordId;
+    state.actualDeparture = actualDepartureDate;
+    state.actualDepartureSql = toLocalSqlDateTime(actualDepartureDate);
+    state.actualDepartureSource = INFERRED_FROM_GEOFENCE_SOURCE;
+    state.actualDepartureSourceRecordId = actualDepartureSourceRecordId;
 
 };
 
-const buildCustomsStopsByCode = (stops = []) => (
-    stops.reduce((map, stop) => {
-        const stopCode = normalizeCode(stop?.stop_code);
-
-        if (CUSTOMS_STOP_CODES.has(stopCode)) {
-            map.set(stopCode, stop);
-        }
-
-        return map;
-    }, new Map())
+const isValidCompletedStateBefore = (state, referenceArrivalDate) => (
+    state?.actualArrival
+    && state?.actualDeparture
+    && state.actualDeparture.getTime() > state.actualArrival.getTime()
+    && state.actualDeparture.getTime() < referenceArrivalDate.getTime()
 );
+
+const buildCompletedIntervalBeforeReference = ({
+    state,
+    referenceArrivalDate,
+    arrivalMinutesBefore,
+    departureMinutesBefore,
+} = {}) => {
+
+    if (!referenceArrivalDate) {
+        return null;
+    }
+
+    const referenceTime = referenceArrivalDate.getTime();
+    const arrivalDate = state?.actualArrival || addMinutes(referenceArrivalDate, -arrivalMinutesBefore);
+    let departureDate = state?.actualDeparture || addMinutes(referenceArrivalDate, -departureMinutesBefore);
+    let usedExistingDeparture = Boolean(state?.actualDeparture);
+
+    if (arrivalDate.getTime() >= referenceTime) {
+        return null;
+    }
+
+    if (departureDate.getTime() <= arrivalDate.getTime() || departureDate.getTime() >= referenceTime) {
+        const midpointTime = Math.floor((arrivalDate.getTime() + referenceTime) / 2);
+        departureDate = new Date(midpointTime);
+        usedExistingDeparture = false;
+    }
+
+    if (departureDate.getTime() <= arrivalDate.getTime()) {
+        departureDate = addMinutes(arrivalDate, 1);
+        usedExistingDeparture = false;
+    }
+
+    if (departureDate.getTime() >= referenceTime) {
+        departureDate = addMinutes(referenceArrivalDate, -1);
+        usedExistingDeparture = false;
+    }
+
+    if (departureDate.getTime() <= arrivalDate.getTime() || departureDate.getTime() >= referenceTime) {
+        return null;
+    }
+
+    return {
+        arrivalDate,
+        departureDate,
+        usedExistingDeparture,
+    };
+
+};
+
+const completeStopBeforeReference = async ({
+    state,
+    stopCode,
+    referenceStopCode,
+    referenceArrivalDate,
+    referenceArrivalSql,
+    sourceRecordId,
+    arrivalMinutesBefore,
+    departureMinutesBefore,
+} = {}) => {
+
+    if (!state?.crossStopId || !referenceArrivalDate) {
+        return null;
+    }
+
+    if (isValidCompletedStateBefore(state, referenceArrivalDate)) {
+        return null;
+    }
+
+    if (state.actualDeparture && isGeofenceSource(state.actualDepartureSource)) {
+        return null;
+    }
+
+    const interval = buildCompletedIntervalBeforeReference({
+        state,
+        referenceArrivalDate,
+        arrivalMinutesBefore,
+        departureMinutesBefore,
+    });
+
+    if (!interval) {
+        return null;
+    }
+
+    setStateTimes({
+        state,
+        actualArrivalDate: interval.arrivalDate,
+        actualArrivalSourceRecordId: state.actualArrivalSourceRecordId || sourceRecordId,
+        actualDepartureDate: interval.departureDate,
+        actualDepartureSourceRecordId: interval.usedExistingDeparture
+            ? state.actualDepartureSourceRecordId || sourceRecordId
+            : sourceRecordId,
+    });
+
+    await persistSpecialStopState({
+        state,
+        stopCode,
+    });
+
+    return {
+        cross_stop_id: state.crossStopId,
+        stop_code: stopCode,
+        action: `INFERRED_COMPLETED_BEFORE_${referenceStopCode}`,
+        actual_arrival: state.actualArrivalSql,
+        actual_departure: state.actualDepartureSql,
+        reference_stop_code: referenceStopCode,
+        reference_arrival: referenceArrivalSql,
+    };
+
+};
+
+const persistSpecialStopState = async ({
+    state,
+    stopCode,
+} = {}) => updateCrossSpecialStopGeofenceTimes({
+    cross_stop_id: state.crossStopId,
+    stop_codes: getSpecialStopUpdateCodes(stopCode),
+    stop_names: getSpecialStopUpdateNames(stopCode),
+    actual_arrival: state.actualArrivalSql,
+    actual_arrival_source: state.actualArrivalSource,
+    actual_arrival_source_record_id: state.actualArrivalSourceRecordId,
+    actual_departure: state.actualDepartureSql,
+    actual_departure_source: state.actualDepartureSource,
+    actual_departure_source_record_id: state.actualDepartureSourceRecordId,
+});
 
 const getStopId = (stop) => (
     stop?.id || stop?.cross_stop_id || stop?.stop_id || null
 );
-
-const estimateCustomsTimes = ({ stops = [], dbStops = [] }) => {
-
-    const sortedStops = sortBySequence(stops);
-    const mxCustoms = findStopByCode(sortedStops, 'MX_CUSTOMS');
-    const usCustoms = findStopByCode(sortedStops, 'US_CUSTOMS');
-
-    if (!mxCustoms || !usCustoms) {
-        return [];
-    }
-
-    const previousStop = findPreviousRealStop(sortedStops, mxCustoms);
-    const nextStop = findNextRealStop(sortedStops, usCustoms);
-
-    if (!hasValue(previousStop?.actual_departure) || !hasValue(nextStop?.actual_arrival)) {
-        return [];
-    }
-
-    const startTime = toTimestamp(previousStop.actual_departure);
-    const endTime = toTimestamp(nextStop.actual_arrival);
-
-    if (!startTime || !endTime || endTime <= startTime) {
-        return [];
-    }
-
-    const midpoint = startTime + ((endTime - startTime) / 2);
-    const dbStopsByCode = buildDbStopsByCode(dbStops);
-    const estimates = [
-        {
-            stopCode: 'MX_CUSTOMS',
-            actual_arrival: toSqlDateTime(startTime),
-            actual_departure: toSqlDateTime(midpoint),
-        },
-        {
-            stopCode: 'US_CUSTOMS',
-            actual_arrival: toSqlDateTime(midpoint),
-            actual_departure: toSqlDateTime(endTime),
-        },
-    ];
-
-    return estimates
-        .map((estimate) => {
-            const dbStop = dbStopsByCode.get(estimate.stopCode);
-
-            if (!dbStop?.id && !dbStop?.cross_stop_id && !dbStop?.stop_id) {
-                return null;
-            }
-
-            return {
-                ...estimate,
-                cross_stop_id: dbStop.id || dbStop.cross_stop_id || dbStop.stop_id,
-                actual_arrival: firstValue(dbStop.actual_arrival, estimate.actual_arrival),
-                actual_departure: firstValue(dbStop.actual_departure, estimate.actual_departure),
-                shouldUpdate: !hasValue(dbStop.actual_arrival) || !hasValue(dbStop.actual_departure),
-            };
-        })
-        .filter(Boolean)
-        .filter((estimate) => estimate.shouldUpdate);
-
-};
 
 const buildPayloadStopsByMcleodStopId = (stops = []) => (
     stops.reduce((map, stop) => {
@@ -369,95 +519,222 @@ const deleteStaleStopsForCross = async ({ crossId, stops = [] }) => {
 
 };
 
-const updateEstimatedCustomsTimesForCross = async ({ stops = [], dbStops = [] }) => {
+const getSortedCustomsEvents = async ({
+    trailerId,
+    stopCode,
+    start,
+    end,
+} = {}) => {
 
-    const estimatedStops = estimateCustomsTimes({
-        stops,
-        dbStops,
-    });
-    const updatedEstimatedStops = [];
-    const skippedEstimatedStops = [];
+    const geofences = SPECIAL_GEOFENCES_BY_STOP_CODE[stopCode] || [];
+    const eventSets = await Promise.all(
+        geofences.map((geofence) => (
+            getTkGeofenceEvents({
+                vehicle: trailerId,
+                geofence,
+                start,
+                end,
+            })
+        ))
+    );
 
-    for (const estimatedStop of estimatedStops) {
-        try {
-            await updateCrossCustomsStopTimes({
-                cross_stop_id: estimatedStop.cross_stop_id,
-                actual_arrival: estimatedStop.actual_arrival,
-                actual_departure: estimatedStop.actual_departure,
-            });
+    return eventSets
+        .flat()
+        .map((event) => {
+            const eventDate = toUtcStoredDateOrNull(event.date_event);
 
-            updatedEstimatedStops.push(estimatedStop);
-        } catch (error) {
-            skippedEstimatedStops.push({
-                estimatedStop,
-                reason: error.message,
-            });
-        }
-    }
-
-    return {
-        updatedEstimatedStops,
-        skippedEstimatedStops,
-    };
+            return {
+                ...event,
+                _event_date: eventDate,
+                _event_date_sql: toLocalSqlDateTime(eventDate),
+            };
+        })
+        .filter((event) => event._event_date && event._event_date_sql)
+        .sort((a, b) => (
+            a._event_date.getTime() - b._event_date.getTime()
+            || Number(a.id || 0) - Number(b.id || 0)
+        ));
 
 };
 
-const updateCustomsTimesFromGeofenceForCross = async ({ dbStops = [], gps = null }) => {
+const completeMissingPreviousCustomsStops = async ({
+    statesByCode,
+} = {}) => {
+
+    const pensionState = statesByCode.get('PENSIEBT');
+    const mxState = statesByCode.get('MX_CUSTOMS');
+    const usState = statesByCode.get('US_CUSTOMS');
+    const inferredStops = [];
+
+    if (!pensionState?.crossStopId || !mxState?.crossStopId) {
+        return inferredStops;
+    }
+
+    if (mxState.actualArrival) {
+        const inferredPensionStop = await completeStopBeforeReference({
+            state: pensionState,
+            stopCode: 'PENSIEBT',
+            referenceStopCode: 'MX_CUSTOMS',
+            referenceArrivalDate: mxState.actualArrival,
+            referenceArrivalSql: mxState.actualArrivalSql,
+            sourceRecordId: mxState.actualArrivalSourceRecordId,
+            arrivalMinutesBefore: 20,
+            departureMinutesBefore: 10,
+        });
+
+        if (inferredPensionStop) {
+            inferredStops.push(inferredPensionStop);
+        }
+    }
+
+    if (usState?.actualArrival) {
+        const sourceRecordId = usState.actualArrivalSourceRecordId;
+
+        const inferredMxStop = await completeStopBeforeReference({
+            state: mxState,
+            stopCode: 'MX_CUSTOMS',
+            referenceStopCode: 'US_CUSTOMS',
+            referenceArrivalDate: usState.actualArrival,
+            referenceArrivalSql: usState.actualArrivalSql,
+            sourceRecordId,
+            arrivalMinutesBefore: 20,
+            departureMinutesBefore: 10,
+        });
+
+        if (inferredMxStop) {
+            inferredStops.push(inferredMxStop);
+        }
+
+        const pensionReferenceDate = mxState.actualArrival || usState.actualArrival;
+        const pensionReferenceCode = mxState.actualArrival ? 'MX_CUSTOMS' : 'US_CUSTOMS';
+        const pensionReferenceSql = mxState.actualArrivalSql || usState.actualArrivalSql;
+        const pensionSourceRecordId = mxState.actualArrivalSourceRecordId || sourceRecordId;
+        const inferredPensionStop = await completeStopBeforeReference({
+            state: pensionState,
+            stopCode: 'PENSIEBT',
+            referenceStopCode: pensionReferenceCode,
+            referenceArrivalDate: pensionReferenceDate,
+            referenceArrivalSql: pensionReferenceSql,
+            sourceRecordId: pensionSourceRecordId,
+            arrivalMinutesBefore: 20,
+            departureMinutesBefore: 10,
+        });
+
+        if (inferredPensionStop) {
+            inferredStops.push(inferredPensionStop);
+        }
+    }
+
+    return inferredStops;
+
+};
+
+const updateCustomsTimesFromGeofenceForCross = async ({ dbStops = [], trailerId = null }) => {
 
     const updatedGeofenceStops = [];
     const skippedGeofenceStops = [];
 
-    if (!hasGpsCoordinates(gps)) {
+    if (!trailerId) {
         return {
             updatedGeofenceStops,
             skippedGeofenceStops,
         };
     }
 
-    const coordinates = resolveGpsCoordinates(gps);
-    const gpsTimestamp = resolveGpsTimestamp(gps);
-    const customsStopsByCode = buildCustomsStopsByCode(dbStops);
-    const geofences = await getCustomsGeofencesContainingPoint(coordinates);
-    const insideStopCodes = new Set(geofences.map((geofence) => geofence.stop_code));
+    const window = buildCurrentLocalDayUtcWindow();
+    const specialStopsByCode = buildSpecialGeofenceStopsByCode(dbStops);
+    const statesByCode = new Map(
+        [...SPECIAL_GEOFENCE_STOP_CODES]
+            .map((stopCode) => [stopCode, buildStopState(specialStopsByCode.get(stopCode))])
+            .filter(([, state]) => state.crossStopId)
+    );
 
-    for (const stopCode of CUSTOMS_STOP_CODES) {
-        const dbStop = customsStopsByCode.get(stopCode);
-        const crossStopId = getStopId(dbStop);
+    for (const stopCode of GEOFENCE_EVENT_STOP_CODES) {
+        const state = statesByCode.get(stopCode);
+        const crossStopId = state?.crossStopId;
 
         if (!crossStopId) {
             continue;
         }
 
         try {
-            if (insideStopCodes.has(stopCode) && !hasValue(dbStop.actual_arrival)) {
-                await updateCrossCustomsStopTimes({
+            const events = await getSortedCustomsEvents({
+                trailerId,
+                stopCode,
+                ...window,
+            });
+
+            for (const event of events) {
+                const eventName = normalizeCode(event.event);
+
+                if (eventName === 'GEOFENCE ENTRY') {
+                    if (state.actualArrival || state.actualDeparture) {
+                        continue;
+                    }
+
+                    await updateCrossSpecialStopGeofenceTimes({
+                        cross_stop_id: crossStopId,
+                        stop_codes: getSpecialStopUpdateCodes(stopCode),
+                        stop_names: getSpecialStopUpdateNames(stopCode),
+                        actual_arrival: event._event_date_sql,
+                        actual_arrival_source_record_id: event.id || null,
+                        actual_departure: null,
+                        actual_departure_source_record_id: null,
+                    });
+
+                    state.actualArrival = event._event_date;
+                    state.actualArrivalSql = event._event_date_sql;
+                    state.actualArrivalSource = 'GPS_GEOFENCE';
+                    state.actualArrivalSourceRecordId = event.id || null;
+
+                    updatedGeofenceStops.push({
+                        cross_stop_id: crossStopId,
+                        stop_code: stopCode,
+                        action: 'ARRIVAL',
+                        event_id: event.id || null,
+                        event_details: event.event_details,
+                        actual_arrival: event._event_date_sql,
+                    });
+                    continue;
+                }
+
+                if (eventName !== 'GEOFENCE EXIT') {
+                    continue;
+                }
+
+                if (!state.actualArrival || event._event_date.getTime() <= state.actualArrival.getTime()) {
+                    continue;
+                }
+
+                if (state.actualDeparture) {
+                    continue;
+                }
+
+                await updateCrossSpecialStopGeofenceTimes({
                     cross_stop_id: crossStopId,
-                    actual_arrival: gpsTimestamp,
-                    actual_departure: null,
+                    stop_codes: getSpecialStopUpdateCodes(stopCode),
+                    stop_names: getSpecialStopUpdateNames(stopCode),
+                    actual_arrival: state.actualArrivalSql,
+                    actual_arrival_source: state.actualArrivalSource,
+                    actual_arrival_source_record_id: state.actualArrivalSourceRecordId,
+                    actual_departure: event._event_date_sql,
+                    actual_departure_source: 'GPS_GEOFENCE',
+                    actual_departure_source_record_id: event.id || null,
                 });
 
-                updatedGeofenceStops.push({
-                    cross_stop_id: crossStopId,
-                    stop_code: stopCode,
-                    action: 'ARRIVAL',
-                    actual_arrival: gpsTimestamp,
-                    geofences: geofences.filter((geofence) => geofence.stop_code === stopCode),
-                });
-            }
-
-            if (!insideStopCodes.has(stopCode) && hasValue(dbStop.actual_arrival) && !hasValue(dbStop.actual_departure)) {
-                await updateCrossCustomsStopTimes({
-                    cross_stop_id: crossStopId,
-                    actual_arrival: dbStop.actual_arrival,
-                    actual_departure: gpsTimestamp,
-                });
+                state.actualDeparture = event._event_date;
+                state.actualDepartureSql = event._event_date_sql;
+                state.actualDepartureSource = 'GPS_GEOFENCE';
+                state.actualDepartureSourceRecordId = event.id || null;
 
                 updatedGeofenceStops.push({
                     cross_stop_id: crossStopId,
                     stop_code: stopCode,
                     action: 'DEPARTURE',
-                    actual_arrival: dbStop.actual_arrival,
-                    actual_departure: gpsTimestamp,
+                    event_id: event.id || null,
+                    event_details: event.event_details,
+                    actual_arrival: state.actualArrivalSql,
+                    actual_departure: event._event_date_sql,
                 });
             }
         } catch (error) {
@@ -469,7 +746,19 @@ const updateCustomsTimesFromGeofenceForCross = async ({ dbStops = [], gps = null
         }
     }
 
+    try {
+        updatedGeofenceStops.push(...await completeMissingPreviousCustomsStops({
+            statesByCode,
+        }));
+    } catch (error) {
+        skippedGeofenceStops.push({
+            stop_code: 'PENSIEBT/MX_CUSTOMS',
+            reason: error.message,
+        });
+    }
+
     return {
+        window,
         updatedGeofenceStops,
         skippedGeofenceStops,
     };
@@ -566,12 +855,13 @@ export const persistActiveCrossesUpdate = async ({ items = [] } = {}) => {
                 cross_id: crossId,
             });
 
-            const gps = await getGpsForTrailer(firstValue(
+            const trailerId = firstValue(
                 crossPayload.cross.trailer_id,
                 item.activeCross?.trailer_id,
                 item.activeCross?.caja,
                 item.activeCross?.trailer,
-            ));
+            );
+            const gps = await getGpsForTrailer(trailerId);
             const stopsEtaResult = await enrichStopsEta({
                 stops: item.stopsPayload?.stops || [],
                 gps,
@@ -590,17 +880,12 @@ export const persistActiveCrossesUpdate = async ({ items = [] } = {}) => {
             const dbStops = refreshedDetail?.stops || item.dbDetail?.stops || [];
             const geofenceCustomsResult = await updateCustomsTimesFromGeofenceForCross({
                 dbStops,
-                gps,
+                trailerId,
             });
-            const estimatedCustomsResult = geofenceCustomsResult.updatedGeofenceStops.length
-                ? {
-                    updatedEstimatedStops: [],
-                    skippedEstimatedStops: [],
-                }
-                : await updateEstimatedCustomsTimesForCross({
-                    stops,
-                    dbStops,
-                });
+            const estimatedCustomsResult = {
+                updatedEstimatedStops: [],
+                skippedEstimatedStops: [],
+            };
             const assignmentsResult = await upsertAssignmentsForCross({
                 crossId,
                 orderId,

@@ -1,11 +1,61 @@
 import { executeSp } from '../../config/db/db.portal.config.js';
 
-export const getCustomerGroupCrossPlantsExceptions = async (isActive = 1) => {
+export const getCustomerGroupCrossPlantsExceptions = async (options = {}) => {
+
+    const filters = typeof options === 'object'
+        ? options
+        : { isActive: options ?? 1 };
+
+    const {
+        customerGroupId = null,
+        locationName = null,
+        isActive = 1,
+    } = filters;
 
     const resultSets = await executeSp('sp_customer_group_cross_plants_exceptions_get', [
+        customerGroupId,
+        locationName,
         isActive,
     ]);
 
     return resultSets[0] || [];
+
+};
+
+export const insertCustomerGroupCrossPlantException = async ({
+    customerGroupId,
+    plantLocationCode,
+    plantLocationName = null,
+    isActive = null,
+} = {}) => {
+
+    const resultSets = await executeSp('sp_customer_group_cross_plant_exception_insert', [
+        customerGroupId,
+        plantLocationCode,
+        plantLocationName,
+        isActive,
+    ]);
+
+    return (resultSets.find((resultSet) => Array.isArray(resultSet)) || [])[0] || null;
+
+};
+
+export const updateCustomerGroupCrossPlantException = async ({
+    id,
+    customerGroupId,
+    plantLocationCode,
+    plantLocationName = null,
+    isActive = null,
+} = {}) => {
+
+    const resultSets = await executeSp('sp_customer_group_cross_plant_exception_update', [
+        id,
+        customerGroupId,
+        plantLocationCode,
+        plantLocationName,
+        isActive,
+    ]);
+
+    return (resultSets.find((resultSet) => Array.isArray(resultSet)) || [])[0] || null;
 
 };

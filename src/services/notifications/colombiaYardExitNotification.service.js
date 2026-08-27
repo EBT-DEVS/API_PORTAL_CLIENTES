@@ -1,17 +1,35 @@
 import { getTrailerData } from '../../models/db_gps/trailers.model.js';
-import { getCustomsGeofencesContainingPoint } from '../../models/db_gps/geofences.model.js';
+import { getCrossDetailById } from '../../models/crosses/crosses.model.js';
+import { updateCrossStopEta } from '../../models/crosses/crosses.stops.model.js';
 import {
-    getColombiaYardExitNotificationFallbackCandidates,
-    getColombiaYardExitNotificationRecipients,
-    getPendingColombiaYardExitNotifications,
-    markColombiaYardExitNotificationSent,
+    clearColombiaYardStopDeparture,
+    getColombiaYardGeofenceEventCandidates,
+    getEbtColombiaGeofenceEvents,
+    getTkGeofenceEvents,
     updateColombiaOriginStopDeparture,
+    updateColombiaYardStopDeparture,
+    updateColombiaYardStopArrival,
 } from '../../models/notifications/colombia.yard.exit.notifications.model.js';
+import { insertNotificationDispatchLog } from '../../models/notifications/notification.dispatch.logs.model.js';
+import { getNotificationReasonRecipients } from '../../models/notifications/notification.reason.recipients.model.js';
 import { enrichActiveStopEtaFromPcMiller } from '../crosses/crossesPcMillerEta.service.js';
 import { sendEmail } from './notificationChannelDispatcher.service.js';
 
-const buildEmailSubject = (item) => `Caja ${item?.trailer_id || 'sin caja'} camino a cruce`;
+const buildEmailSubject = (item) => `Caja ${item?.trailer_id || 'sin caja'} en inicio de aduana`;
+const NOTIFICATION_REASON_CODE = 'COLOMBIA_YARD_EXIT';
+const NOTIFICATION_CHANNEL_CODE = 'EMAIL';
 const COLOMBIA_YARD_TIME_ZONE = 'America/Matamoros';
+const EBT_COLOMBIA_GEOFENCE_SOURCE = 'GPS_GEOFENCE';
+const MEXICAN_CUSTOMS_NOTIFICATION_GEOFENCES = [
+    'Aduana 240, Mex',
+    'ADUANA MEXICANA COLOMBIA',
+    'Inicio Aduana Mexicana Colombia',
+    'Inicio Aduana 240 MEX',
+];
+const GEOFENCE_EVENT_WINDOW_PAST_MS = 60 * 60 * 1000;
+const GEOFENCE_EVENT_WINDOW_FUTURE_MS = 60 * 60 * 1000;
+const CUSTOMS_NOTIFICATION_WINDOW_PAST_MS = 30 * 60 * 1000;
+const CUSTOMS_NOTIFICATION_WINDOW_FUTURE_MS = 30 * 60 * 1000;
 
 const escapeHtml = (value) => String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -22,6 +40,14 @@ const escapeHtml = (value) => String(value ?? '')
 
 const firstValue = (...values) => (
     values.find((value) => value !== undefined && value !== null && value !== '') ?? null
+);
+
+const hasValue = (value) => (
+    value !== undefined && value !== null && value !== ''
+);
+
+const isMcleodSource = (source) => (
+    String(source || 'MCLEOD').trim().toUpperCase() === 'MCLEOD'
 );
 
 const formatNaiveDateTime = (value) => {
@@ -85,6 +111,111 @@ const toTimeZoneSqlDateTime = (value = new Date(), timeZone = COLOMBIA_YARD_TIME
     }
 
     return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+
+};
+
+const toUtcSqlDateTime = (value = new Date()) => {
+
+    const date = value instanceof Date ? value : new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+        return null;
+    }
+
+    const pad = (part) => String(part).padStart(2, '0');
+
+    return [
+        date.getUTCFullYear(),
+        pad(date.getUTCMonth() + 1),
+        pad(date.getUTCDate()),
+    ].join('-') + ' ' + [
+        pad(date.getUTCHours()),
+        pad(date.getUTCMinutes()),
+        pad(date.getUTCSeconds()),
+    ].join(':');
+
+};
+
+const toLocalSqlDateTime = (value) => {
+
+    if (!value) {
+        return null;
+    }
+
+    if (!(value instanceof Date)) {
+        const normalized = String(value).trim().replace('T', ' ').slice(0, 19);
+
+        return normalized || null;
+    }
+
+    if (Number.isNaN(value.getTime())) {
+        return null;
+    }
+
+    const pad = (part) => String(part).padStart(2, '0');
+
+    return [
+        value.getFullYear(),
+        pad(value.getMonth() + 1),
+        pad(value.getDate()),
+    ].join('-') + ' ' + [
+        pad(value.getHours()),
+        pad(value.getMinutes()),
+        pad(value.getSeconds()),
+    ].join(':');
+
+};
+
+const toDateOrNull = (value) => {
+
+    if (!hasValue(value)) {
+        return null;
+    }
+
+    const date = value instanceof Date
+        ? value
+        : new Date(String(value).replace(' ', 'T'));
+
+    return Number.isNaN(date.getTime()) ? null : date;
+
+};
+
+const toUtcStoredDateOrNull = (value) => {
+
+    if (!hasValue(value)) {
+        return null;
+    }
+
+    if (value instanceof Date) {
+        return new Date(Date.UTC(
+            value.getFullYear(),
+            value.getMonth(),
+            value.getDate(),
+            value.getHours(),
+            value.getMinutes(),
+            value.getSeconds(),
+        ));
+    }
+
+    const match = String(value).trim().match(
+        /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?/
+    );
+
+    if (!match) {
+        return null;
+    }
+
+    const [, year, month, day, hour = '00', minute = '00', second = '00'] = match;
+    const date = new Date(Date.UTC(
+        Number(year),
+        Number(month) - 1,
+        Number(day),
+        Number(hour),
+        Number(minute),
+        Number(second),
+    ));
+
+    return Number.isNaN(date.getTime()) ? null : date;
 
 };
 
@@ -241,9 +372,67 @@ const calculateEtaToDestinationStop = async ({ item, gps }) => {
 
 };
 
+const recalculateAndPersistNextStopEta = async ({ crossId, trailerId }) => {
+
+    const detail = await getCrossDetailById(crossId);
+    const stops = detail?.stops || [];
+
+    if (!stops.length) {
+        return {
+            updated: false,
+            skippedReason: 'missing_stops',
+        };
+    }
+
+    const gps = trailerId ? await getTrailerData(trailerId) : null;
+    const etaResult = await enrichActiveStopEtaFromPcMiller({
+        stops,
+        gps,
+    });
+    const activeStopEta = etaResult.activeStopEta;
+
+    if (!activeStopEta?.eta) {
+        return {
+            updated: false,
+            skippedReason: etaResult.skippedReason || 'missing_eta',
+            activeStopSequence: etaResult.activeStopSequence || null,
+        };
+    }
+
+    const activeStop = (etaResult.stops || []).find((stop) => (
+        Number(stop.sequence) === Number(activeStopEta.activeStopSequence)
+    ));
+
+    if (!activeStop?.id) {
+        return {
+            updated: false,
+            skippedReason: 'active_stop_id_not_found',
+            activeStopEta,
+        };
+    }
+
+    const persisted = await updateCrossStopEta({
+        cross_stop_id: activeStop.id,
+        eta: activeStopEta.eta,
+    });
+
+    return {
+        updated: true,
+        activeStopEta,
+        stop: persisted,
+    };
+
+};
+
+const resolveNotificationEventLabel = (item) => (
+    item?._trigger_source === 'MEXICAN_CUSTOMS_START_GEOFENCE_ENTRY'
+        ? 'Entrada a inicio de aduana'
+        : 'Salida'
+);
+
 const buildEmailHtml = ({ item, gps, etaResult }) => `
     <div style="font-family: Arial, sans-serif; padding: 16px; color: #1f2933;">
-        <h2 style="margin: 0 0 12px; color: #1f2933;">Caja salio de Patio EBT (Colombia) para iniciar cruce</h2>
+        <h2 style="margin: 0 0 12px; color: #1f2933;">Caja en inicio de Aduana Mexicana Colombia</h2>
         <table cellspacing="0" cellpadding="0" style="border-collapse: collapse; width: 100%; font-size: 14px;">
             <tbody>
                 <tr>
@@ -267,7 +456,7 @@ const buildEmailHtml = ({ item, gps, etaResult }) => `
                     <td style="border: 1px solid #d9e2ec; padding: 8px;">${escapeHtml(item.yard_name)}</td>
                 </tr>
                 <tr>
-                    <td style="border: 1px solid #d9e2ec; padding: 8px; font-weight: bold;">Salida</td>
+                    <td style="border: 1px solid #d9e2ec; padding: 8px; font-weight: bold;">${escapeHtml(resolveNotificationEventLabel(item))}</td>
                     <td style="border: 1px solid #d9e2ec; padding: 8px;">${escapeHtml(formatDateTime(item.exit_at, { preserveDateObjectTime: true }))}</td>
                 </tr>
                 <tr>
@@ -289,174 +478,250 @@ const buildEmailHtml = ({ item, gps, etaResult }) => `
 
 const getRecipientEmails = (recipients = []) => (
     recipients
-        .map((recipient) => recipient.email)
+        .map((recipient) => recipient.recipient_value)
         .filter(Boolean)
 );
 
-const resolveDepartureSource = (item) => (
-    item?._trigger_source === 'GPS_MEXICAN_CUSTOMS_GEOFENCE'
-        ? 'GPS_GEOFENCE'
-        : 'YARD_EXIT'
+const getUniqueRecipientEmails = (recipients = []) => [...new Set(getRecipientEmails(recipients))];
+
+const resolveDepartureSource = () => EBT_COLOMBIA_GEOFENCE_SOURCE;
+
+const resolveSourceRecordId = (item) => (
+    item?._geofence_event_id || item?._gps?.id || item?.source_record_id || item?.yard_record_id || null
 );
 
-const getFallbackItemIfInsideMexicanCustoms = async (item) => {
+const buildGeofenceEventWindow = () => {
 
-    const gps = item.trailer_id ? await getTrailerData(item.trailer_id) : null;
-
-    if (!hasGpsCoordinates(gps)) {
-        return null;
-    }
-
-    const geofences = await getCustomsGeofencesContainingPoint(resolveGpsCoordinates(gps));
-    const mexicanCustomsGeofences = geofences.filter(isMexicanCustomsGeofence);
-
-    if (!mexicanCustomsGeofences.length) {
-        return null;
-    }
+    const now = Date.now();
 
     return {
-        ...item,
-        exit_at: resolveGpsDateTime(gps) || item.exit_at || toTimeZoneSqlDateTime(),
-        _gps: gps,
-        _trigger_source: 'GPS_MEXICAN_CUSTOMS_GEOFENCE',
-        _trigger_geofences: mexicanCustomsGeofences,
+        start: toUtcSqlDateTime(new Date(now - GEOFENCE_EVENT_WINDOW_PAST_MS)),
+        end: toUtcSqlDateTime(new Date(now + GEOFENCE_EVENT_WINDOW_FUTURE_MS)),
     };
 
 };
 
-const getFallbackPendingItems = async ({ excludeCrossIds = new Set() } = {}) => {
+const buildCustomsNotificationWindow = () => {
 
-    const candidates = await getColombiaYardExitNotificationFallbackCandidates();
-    const pendingItems = [];
-    const skippedItems = [];
-
-    for (const candidate of candidates) {
-        if (excludeCrossIds.has(candidate.cross_id)) {
-            continue;
-        }
-
-        try {
-            const fallbackItem = await getFallbackItemIfInsideMexicanCustoms(candidate);
-
-            if (!fallbackItem) {
-                skippedItems.push({
-                    cross_id: candidate.cross_id,
-                    trailer_id: candidate.trailer_id,
-                    reason: 'not_inside_mexican_customs_geofence',
-                });
-                continue;
-            }
-
-            pendingItems.push(fallbackItem);
-        } catch (error) {
-            skippedItems.push({
-                cross_id: candidate.cross_id,
-                trailer_id: candidate.trailer_id,
-                reason: error.message,
-            });
-        }
-    }
+    const now = Date.now();
 
     return {
-        candidatesCount: candidates.length,
-        pendingItems,
-        skippedItems,
+        start: toUtcSqlDateTime(new Date(now - CUSTOMS_NOTIFICATION_WINDOW_PAST_MS)),
+        end: toUtcSqlDateTime(new Date(now + CUSTOMS_NOTIFICATION_WINDOW_FUTURE_MS)),
     };
 
 };
 
-const processNotificationItem = async ({ item, recipients }) => {
+const getSortedGeofenceEvents = async ({ trailerId, start, end }) => {
 
-    const gps = item._gps || (item.trailer_id ? await getTrailerData(item.trailer_id) : null);
-    const etaResult = await calculateEtaToDestinationStop({
-        item,
-        gps,
+    const events = await getEbtColombiaGeofenceEvents({
+        vehicle: trailerId,
+        start,
+        end,
     });
-    const destinatarios = getRecipientEmails(recipients);
-    const html = buildEmailHtml({
-        item,
-        gps,
-        etaResult,
-    });
-    const emailResponse = await sendEmail({
-        destinatarios,
-        asunto: buildEmailSubject(item),
-        html,
-    });
-    const sent = await markColombiaYardExitNotificationSent({
-        cross_id: item.cross_id,
-        trailer_id: item.trailer_id,
-        mcleod_order_id: item.mcleod_order_id,
-        yard_name: item.yard_name,
-        exit_at: item.exit_at,
-        recipients_json: JSON.stringify(destinatarios),
-    });
-    const departureStopUpdate = await updateColombiaOriginStopDeparture({
-        cross_stop_id: item.departure_stop_id || item.origin_stop_id,
-        cross_id: item.cross_id,
-        actual_departure: item.exit_at,
-        actual_departure_source: resolveDepartureSource(item),
-    });
+
+    return events
+        .map((event) => ({
+            ...event,
+            _event_date: toUtcStoredDateOrNull(event.date_event),
+            _event_date_sql: toLocalSqlDateTime(toUtcStoredDateOrNull(event.date_event)),
+        }))
+        .filter((event) => event._event_date && event._event_date_sql)
+        .sort((a, b) => (
+            a._event_date.getTime() - b._event_date.getTime()
+            || Number(a.id || 0) - Number(b.id || 0)
+        ));
+
+};
+
+const buildNotificationItemFromCustomsEntryEvent = ({ item, event }) => ({
+    ...item,
+    exit_at: event._event_date_sql,
+    source_record_id: event.id || null,
+    _geofence_event_id: event.id || null,
+    _trigger_source: 'MEXICAN_CUSTOMS_START_GEOFENCE_ENTRY',
+    _skip_departure_update: true,
+});
+
+const processGeofenceEntryEvent = async ({ item, event, state }) => {
+
+    const eventTime = event._event_date.getTime();
+    const departureTime = state.actualDeparture?.getTime() || null;
+
+    if (!state.actualArrival) {
+        const arrivalStopUpdate = await updateColombiaYardStopArrival({
+            cross_stop_id: item.pension_stop_id,
+            cross_id: item.cross_id,
+            actual_arrival: event._event_date_sql,
+            actual_arrival_source: EBT_COLOMBIA_GEOFENCE_SOURCE,
+            actual_arrival_source_record_id: event.id || null,
+        });
+
+        if (arrivalStopUpdate.updated) {
+            state.actualArrival = event._event_date;
+            state.actualArrivalSourceRecordId = event.id || null;
+        }
+
+        return {
+            action: 'ARRIVAL',
+            event_id: event.id || null,
+            date_event: event._event_date_sql,
+            arrivalStopUpdate,
+        };
+    }
+
+    if (state.actualDeparture && eventTime > departureTime) {
+        const clearDepartureUpdate = await clearColombiaYardStopDeparture({
+            cross_stop_id: item.pension_stop_id,
+            cross_id: item.cross_id,
+        });
+
+        if (clearDepartureUpdate.updated) {
+            state.actualDeparture = null;
+            state.actualDepartureSourceRecordId = null;
+        }
+
+        return {
+            action: 'CLEAR_DEPARTURE_AFTER_REENTRY',
+            event_id: event.id || null,
+            date_event: event._event_date_sql,
+            clearDepartureUpdate,
+        };
+    }
 
     return {
+        action: 'SKIPPED_ENTRY',
+        event_id: event.id || null,
+        date_event: event._event_date_sql,
+        reason: 'arrival_already_set',
+    };
+
+};
+
+const processGeofenceExitEvent = async ({ item, event, state }) => {
+
+    const eventTime = event._event_date.getTime();
+    const arrivalTime = state.actualArrival?.getTime() || null;
+    const departureTime = state.actualDeparture?.getTime() || null;
+
+    if (!state.actualArrival) {
+        return {
+            action: 'SKIPPED_EXIT',
+            event_id: event.id || null,
+            date_event: event._event_date_sql,
+            reason: 'missing_arrival',
+        };
+    }
+
+    if (eventTime <= arrivalTime) {
+        return {
+            action: 'SKIPPED_EXIT',
+            event_id: event.id || null,
+            date_event: event._event_date_sql,
+            reason: 'exit_before_arrival',
+        };
+    }
+
+    if (state.actualDeparture && eventTime <= departureTime) {
+        return {
+            action: 'SKIPPED_EXIT',
+            event_id: event.id || null,
+            date_event: event._event_date_sql,
+            reason: 'older_than_current_departure',
+        };
+    }
+
+    const departureStopUpdate = await updateColombiaYardStopDeparture({
+        cross_stop_id: item.pension_stop_id,
         cross_id: item.cross_id,
-        trailer_id: item.trailer_id,
-        mcleod_order_id: item.mcleod_order_id,
-        origin_stop_id: item.origin_stop_id,
-        departure_stop_id: item.departure_stop_id || item.origin_stop_id,
-        destination_stop_id: item.destination_stop_id,
-        triggerSource: item._trigger_source || 'D31_YARD_EXIT',
-        triggerGeofences: item._trigger_geofences || [],
-        eta: etaResult.eta,
-        etaSkippedReason: etaResult.skippedReason,
-        destinatarios,
-        emailResponse,
-        sent,
+        actual_departure: event._event_date_sql,
+        actual_departure_source: EBT_COLOMBIA_GEOFENCE_SOURCE,
+        actual_departure_source_record_id: event.id || null,
+    });
+
+    if (departureStopUpdate.updated) {
+        state.actualDeparture = event._event_date;
+        state.actualDepartureSourceRecordId = event.id || null;
+    }
+
+    return {
+        action: 'DEPARTURE',
+        event_id: event.id || null,
+        date_event: event._event_date_sql,
         departureStopUpdate,
     };
 
 };
 
-export const runColombiaYardExitNotifications = async () => {
+const processGeofenceEventsForItem = async ({ item, start, end }) => {
 
-    const recipients = await getColombiaYardExitNotificationRecipients({
-        isActive: 1,
+    const events = await getSortedGeofenceEvents({
+        trailerId: item.trailer_id,
+        start,
+        end,
     });
-    const primaryPendingItems = await getPendingColombiaYardExitNotifications();
-    const fallbackResult = await getFallbackPendingItems({
-        excludeCrossIds: new Set(primaryPendingItems.map((item) => item.cross_id)),
-    });
-    const pendingItems = [
-        ...primaryPendingItems.map((item) => ({
-            ...item,
-            _trigger_source: 'D31_YARD_EXIT',
-        })),
-        ...fallbackResult.pendingItems,
-    ];
-    const results = [];
+    const state = {
+        actualArrival: isMcleodSource(item.pension_actual_arrival_source)
+            ? null
+            : toDateOrNull(item.pension_actual_arrival),
+        actualArrivalSourceRecordId: isMcleodSource(item.pension_actual_arrival_source)
+            ? null
+            : item.pension_actual_arrival_source_record_id || null,
+        actualDeparture: isMcleodSource(item.pension_actual_departure_source)
+            ? null
+            : toDateOrNull(item.pension_actual_departure),
+        actualDepartureSourceRecordId: isMcleodSource(item.pension_actual_departure_source)
+            ? null
+            : item.pension_actual_departure_source_record_id || null,
+    };
+    const eventResults = [];
 
-    if (!recipients.length) {
-        return {
-            pendingCount: pendingItems.length,
-            sentCount: 0,
-            skippedCount: pendingItems.length,
-            results: pendingItems.map((item) => ({
-                cross_id: item.cross_id,
-                trailer_id: item.trailer_id,
-                status: 'SKIPPED',
-                reason: 'missing_recipients',
-            })),
-        };
+    for (const event of events) {
+        const normalizedEvent = String(event.event || '').trim().toUpperCase();
+        const result = normalizedEvent === 'GEOFENCE ENTRY'
+            ? await processGeofenceEntryEvent({ item, event, state })
+            : normalizedEvent === 'GEOFENCE EXIT'
+                ? await processGeofenceExitEvent({ item, event, state })
+                : {
+                    action: 'SKIPPED_EVENT',
+                    event_id: event.id || null,
+                    date_event: event._event_date_sql,
+                    reason: 'unsupported_event',
+                };
+
+        eventResults.push(result);
     }
 
-    for (const item of pendingItems) {
+    return {
+        cross_id: item.cross_id,
+        trailer_id: item.trailer_id,
+        eventsCount: events.length,
+        updatedCount: eventResults.filter((result) => (
+            result.arrivalStopUpdate?.updated
+            || result.departureStopUpdate?.updated
+            || result.clearDepartureUpdate?.updated
+        )).length,
+        eventResults,
+    };
+
+};
+
+const updatePendingArrivalItems = async () => {
+
+    const candidates = await getColombiaYardGeofenceEventCandidates();
+    const window = buildGeofenceEventWindow();
+    const results = [];
+
+    for (const item of candidates) {
         try {
+            const result = await processGeofenceEventsForItem({
+                item,
+                ...window,
+            });
+
             results.push({
-                status: 'SENT',
-                ...(await processNotificationItem({
-                    item,
-                    recipients,
-                })),
+                status: 'PROCESSED',
+                ...result,
             });
         } catch (error) {
             results.push({
@@ -469,14 +734,257 @@ export const runColombiaYardExitNotifications = async () => {
     }
 
     return {
+        window,
+        candidatesCount: candidates.length,
+        pendingCount: 0,
+        updatedCount: results.reduce((total, result) => total + Number(result.updatedCount || 0), 0),
+        errorCount: results.filter((result) => result.status === 'ERROR').length,
+        results,
+    };
+
+};
+
+const getSortedCustomsStartEntryEvents = async ({ trailerId, start, end }) => {
+
+    const eventSets = await Promise.all(
+        MEXICAN_CUSTOMS_NOTIFICATION_GEOFENCES.map((geofence) => (
+            getTkGeofenceEvents({
+                vehicle: trailerId,
+                geofence,
+                start,
+                end,
+            })
+        ))
+    );
+
+    return eventSets
+        .flat()
+        .filter((event) => String(event.event || '').trim().toUpperCase() === 'GEOFENCE ENTRY')
+        .map((event) => ({
+            ...event,
+            _event_date: toUtcStoredDateOrNull(event.date_event),
+            _event_date_sql: toLocalSqlDateTime(toUtcStoredDateOrNull(event.date_event)),
+        }))
+        .filter((event) => event._event_date && event._event_date_sql)
+        .sort((a, b) => (
+            a._event_date.getTime() - b._event_date.getTime()
+            || Number(a.id || 0) - Number(b.id || 0)
+        ));
+
+};
+
+const getPendingCustomsStartNotificationItems = async () => {
+
+    const candidates = (await getColombiaYardGeofenceEventCandidates())
+        .filter((item) => Number(item.notification_sent_count || 0) === 0);
+    const window = buildCustomsNotificationWindow();
+    const results = [];
+    const notificationItems = [];
+
+    for (const item of candidates) {
+        try {
+            const events = await getSortedCustomsStartEntryEvents({
+                trailerId: item.trailer_id,
+                ...window,
+            });
+            const event = events[0] || null;
+
+            results.push({
+                cross_id: item.cross_id,
+                trailer_id: item.trailer_id,
+                status: 'PROCESSED',
+                eventsCount: events.length,
+                notificationEventId: event?.id || null,
+            });
+
+            if (event) {
+                notificationItems.push(buildNotificationItemFromCustomsEntryEvent({
+                    item,
+                    event,
+                }));
+            }
+        } catch (error) {
+            results.push({
+                cross_id: item.cross_id,
+                trailer_id: item.trailer_id,
+                status: 'ERROR',
+                error: error.message,
+            });
+        }
+    }
+
+    return {
+        window,
+        geofences: MEXICAN_CUSTOMS_NOTIFICATION_GEOFENCES,
+        candidatesCount: candidates.length,
+        pendingCount: notificationItems.length,
+        errorCount: results.filter((result) => result.status === 'ERROR').length,
+        notificationItems,
+        results,
+    };
+
+};
+
+const getItemRecipients = async (item) => {
+
+    if (!item.customer_group_id) {
+        return [];
+    }
+
+    return getNotificationReasonRecipients({
+        customer_group_id: item.customer_group_id,
+        notification_reason_code: NOTIFICATION_REASON_CODE,
+        notification_channel_code: NOTIFICATION_CHANNEL_CODE,
+        is_active: 1,
+    });
+
+};
+
+const processNotificationItem = async ({ item }) => {
+
+    const gps = item._gps || (item.trailer_id ? await getTrailerData(item.trailer_id) : null);
+    const etaResult = await calculateEtaToDestinationStop({
+        item,
+        gps,
+    });
+    const recipients = await getItemRecipients(item);
+    const destinatarios = getUniqueRecipientEmails(recipients);
+
+    if (!destinatarios.length) {
+        return {
+            cross_id: item.cross_id,
+            trailer_id: item.trailer_id,
+            mcleod_order_id: item.mcleod_order_id,
+            customer_group_id: item.customer_group_id || null,
+            status: 'SKIPPED',
+            reason: item.customer_group_id ? 'missing_recipients' : 'missing_customer_group',
+        };
+    }
+
+    const subject = buildEmailSubject(item);
+    const html = buildEmailHtml({
+        item,
+        gps,
+        etaResult,
+    });
+    const logPayload = {
+        notification_reason_id: recipients[0]?.notification_reason_id || null,
+        notification_channel_id: recipients[0]?.notification_channel_id || null,
+        customer_group_id: item.customer_group_id || null,
+        entity_id: item.cross_id,
+        subject,
+        recipients_json: JSON.stringify(destinatarios),
+        sent_at: new Date(),
+    };
+    let emailResponse = null;
+
+    try {
+        emailResponse = await sendEmail({
+            destinatarios,
+            asunto: subject,
+            html,
+        });
+    } catch (error) {
+        const failed = await insertNotificationDispatchLog({
+            ...logPayload,
+            status: 'FAILED',
+        });
+
+        return {
+            cross_id: item.cross_id,
+            trailer_id: item.trailer_id,
+            mcleod_order_id: item.mcleod_order_id,
+            customer_group_id: item.customer_group_id,
+            status: 'ERROR',
+            error: error.message,
+            destinatarios,
+            sent: failed,
+        };
+    }
+
+    const sent = await insertNotificationDispatchLog({
+        ...logPayload,
+        status: 'SENT',
+    });
+    const departureStopUpdate = item._skip_departure_update
+        ? {
+            updated: false,
+            skippedReason: 'notification_trigger_only',
+        }
+        : item._departure_stop_update || await updateColombiaOriginStopDeparture({
+            cross_stop_id: item.departure_stop_id || item.origin_stop_id,
+            cross_id: item.cross_id,
+            actual_departure: item.exit_at,
+            actual_departure_source: resolveDepartureSource(item),
+            actual_departure_source_record_id: resolveSourceRecordId(item),
+        });
+    const persistedEta = departureStopUpdate.updated
+        ? await recalculateAndPersistNextStopEta({
+            crossId: item.cross_id,
+            trailerId: item.trailer_id,
+        })
+        : {
+            updated: false,
+            skippedReason: 'departure_not_updated',
+        };
+
+    return {
+        cross_id: item.cross_id,
+        trailer_id: item.trailer_id,
+        mcleod_order_id: item.mcleod_order_id,
+        customer_group_id: item.customer_group_id,
+        origin_stop_id: item.origin_stop_id,
+        departure_stop_id: item.departure_stop_id || item.origin_stop_id,
+        destination_stop_id: item.destination_stop_id,
+        triggerSource: item._trigger_source || 'EBT_COLOMBIA_GEOFENCE_EVENT',
+        triggerGeofences: item._trigger_geofences || [],
+        eta: etaResult.eta,
+        etaSkippedReason: etaResult.skippedReason,
+        persistedEta,
+        destinatarios,
+        emailResponse,
+        sent,
+        departureStopUpdate,
+    };
+
+};
+
+export const runColombiaYardExitNotifications = async () => {
+
+    const arrivalUpdates = await updatePendingArrivalItems();
+    const customsStartNotifications = await getPendingCustomsStartNotificationItems();
+    const pendingItems = customsStartNotifications.notificationItems;
+    const results = [];
+
+    for (const item of pendingItems) {
+        try {
+            const result = await processNotificationItem({ item });
+
+            results.push({
+                status: result.status || 'SENT',
+                ...result,
+            });
+        } catch (error) {
+            results.push({
+                cross_id: item.cross_id,
+                trailer_id: item.trailer_id,
+                status: 'ERROR',
+                error: error.message,
+            });
+        }
+    }
+
+    return {
+        arrivalUpdates,
+        customsStartNotifications,
         pendingCount: pendingItems.length,
-        primaryPendingCount: primaryPendingItems.length,
-        fallbackCandidatesCount: fallbackResult.candidatesCount,
-        fallbackPendingCount: fallbackResult.pendingItems.length,
+        primaryPendingCount: 0,
+        fallbackCandidatesCount: 0,
+        fallbackPendingCount: 0,
         sentCount: results.filter((result) => result.status === 'SENT').length,
         skippedCount: results.filter((result) => result.status === 'SKIPPED').length,
         errorCount: results.filter((result) => result.status === 'ERROR').length,
-        fallbackSkippedItems: fallbackResult.skippedItems,
+        fallbackSkippedItems: [],
         results,
     };
 

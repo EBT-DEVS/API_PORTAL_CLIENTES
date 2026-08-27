@@ -112,6 +112,42 @@ export const getActiveCrossesData = async ({
 
 };
 
+export const getFilteredCrossesData = async ({
+    dateType = null,
+    start = null,
+    end = null,
+    quickFilter = null,
+    plantCode = null,
+    customerCode = null,
+    customerGroupId = null,
+    trailerId = null,
+    priorityId = null,
+    isCross = null,
+    mcleodOrderId = null,
+    poNumber = null,
+    statusId = null,
+} = {}) => {
+
+    const resultSets = await executeSp('sp_cross_get_filtered_data_v2', [
+        dateType,
+        start,
+        end,
+        quickFilter,
+        plantCode,
+        customerCode,
+        customerGroupId,
+        trailerId,
+        priorityId,
+        isCross,
+        mcleodOrderId,
+        poNumber,
+        statusId,
+    ]);
+
+    return resultSets.find((resultSet) => Array.isArray(resultSet)) || [];
+
+};
+
 export const getActiveCrossesForUpdate = async () => {
 
     const resultSets = await executeSp('sp_cross_get_active_for_update');
@@ -126,7 +162,7 @@ export const getCrossDetailById = async (crossId) => {
         crossId,
     ]);
     const dataSets = resultSets.filter((resultSet) => Array.isArray(resultSet));
-    const [crossRows = [], stopRows = [], equipmentRows = [], gpsRows = []] = dataSets;
+    const [crossRows = [], stopRows = [], equipmentRows = [], eventRows = [], gpsRows = []] = dataSets;
     const cross = crossRows[0] || null;
 
     if (!cross) {
@@ -137,6 +173,7 @@ export const getCrossDetailById = async (crossId) => {
         cross,
         stops: stopRows,
         equipment: equipmentRows,
+        events: eventRows,
         gps: gpsRows[0] || null,
     };
 

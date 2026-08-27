@@ -1,4 +1,8 @@
-import { createNotificationSubscription } from '../../models/notifications/notification.subscriptions.model.js';
+import {
+    createNotificationSubscription,
+    deactivateNotificationSubscriptionById,
+    getNotificationSubscriptions,
+} from '../../models/notifications/notification.subscriptions.model.js';
 
 const normalizeNullableString = (value) => {
 
@@ -128,6 +132,81 @@ const badRequest = (res, message) => res.status(400).json({
     success: false,
     message,
 });
+
+export const getNotificationSubscriptionsConfig = async (req, res, next) => {
+
+    try {
+        const id = normalizeNullablePositiveInteger(req.query?.id);
+        const customerCode = normalizeNullableString(req.query?.customer_code ?? req.query?.customerCode);
+        const channel = normalizeNullableString(
+            req.query?.channel
+            ?? req.query?.notification_channel
+            ?? req.query?.notificationChannel
+            ?? req.query?.notification_channel_id
+            ?? req.query?.notificationChannelId
+        );
+        const frequency = normalizeNullableString(
+            req.query?.frequency
+            ?? req.query?.notification_frequency
+            ?? req.query?.notificationFrequency
+            ?? req.query?.notification_frequency_id
+            ?? req.query?.notificationFrequencyId
+        );
+        const isActive = normalizeNullableBooleanNumber(req.query?.is_active ?? req.query?.isActive);
+
+        if (Number.isNaN(id)) {
+            return badRequest(res, 'id invalido');
+        }
+
+        if (Number.isNaN(isActive)) {
+            return badRequest(res, 'is_active invalido');
+        }
+
+        const data = await getNotificationSubscriptions({
+            id,
+            customerCode,
+            channel,
+            frequency,
+            isActive,
+        });
+
+        return res.json({
+            success: true,
+            data,
+        });
+    } catch (error) {
+        return next(error);
+    }
+
+};
+
+export const deactivateNotificationSubscriptionConfig = async (req, res, next) => {
+
+    try {
+        const id = normalizeRequiredPositiveInteger(req.params?.id);
+
+        if (Number.isNaN(id)) {
+            return badRequest(res, 'id invalido');
+        }
+
+        const data = await deactivateNotificationSubscriptionById(id);
+
+        if (!data) {
+            return res.status(404).json({
+                success: false,
+                message: 'Suscripcion no encontrada',
+            });
+        }
+
+        return res.json({
+            success: true,
+            data,
+        });
+    } catch (error) {
+        return next(error);
+    }
+
+};
 
 export const createNotificationSubscriptionFlow = async (req, res, next) => {
 

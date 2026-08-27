@@ -151,6 +151,11 @@ const resolveArrivalStatus = ({ schedArrive, actualArrival }) => {
 
 };
 
+const shouldIgnoreMcleodTimes = ({ stopCode = null, stopName = null } = {}) => (
+    ['PENSIEBT', 'MX_CUSTOMS', 'US_CUSTOMS', 'EBT_YARD', 'EBT YARD'].includes(normalizeCode(stopCode))
+    || normalizeCode(stopName) === 'EBT YARD'
+);
+
 const getStopCompactKey = (stop) => (
     normalizeCode(stop?.stop_code) || normalizeCode(stop?.stop_name) || null
 );
@@ -225,27 +230,35 @@ const compactConsecutiveDuplicateStops = (stops = []) => {
 
 const buildCrossStopPayload = ({ stop, sequence, order }) => {
 
+    const stopCode = normalizeCode(stop?.location_id);
     const schedArrive = normalizeDateTime(firstValue(
         stop?.sched_arrive_early,
         stop?.sched_arrive_late,
         stop?.scheduled_arrival,
     ));
-    const actualArrival = normalizeDateTime(firstValue(
+    const mcleodActualArrival = normalizeDateTime(firstValue(
         stop?.actual_arrival,
         stop?.actual_arrive,
         stop?.arrival_at,
     ));
-    const actualDeparture = normalizeDateTime(firstValue(
+    const stopName = firstValue(stop?.location_name, stop?.name);
+    const ignoredMcleodTimes = shouldIgnoreMcleodTimes({
+        stopCode,
+        stopName,
+    });
+    const actualArrival = ignoredMcleodTimes ? null : mcleodActualArrival;
+    const mcleodActualDeparture = normalizeDateTime(firstValue(
         stop?.actual_departure,
         stop?.departure_at,
     ));
+    const actualDeparture = ignoredMcleodTimes ? null : mcleodActualDeparture;
 
     return {
         cross_id: null,
         sequence,
         source: 'MCLEOD',
-        stop_code: normalizeCode(stop?.location_id),
-        stop_name: firstValue(stop?.location_name, stop?.name),
+        stop_code: stopCode,
+        stop_name: stopName,
         latitude: toNumberOrNull(stop?.latitude),
         longitude: toNumberOrNull(stop?.longitude),
         eta: null,

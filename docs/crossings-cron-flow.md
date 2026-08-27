@@ -406,9 +406,15 @@ Actualizacion API:
 sp__cross_customs_upsert(
   p_cross_stop_id,
   p_customs_country,
-  p_light,
+  p_light, -- GREEN, YELLOW, RED o NULL
   p_papers_ready,
   p_comments
+)
+
+sp__cross_customs_light_upsert(
+  p_cross_stop_id,
+  p_customs_country,
+  p_light -- GREEN, YELLOW, RED o NULL
 )
 
 sp_cross_stop_update_times(
@@ -535,7 +541,7 @@ Body aceptado:
 ```json
 {
   "customs_country": "MX",
-  "light": "GREEN",
+  "light": "YELLOW",
   "papers_ready": 1,
   "comments": "Papeles listos",
   "actual_arrival": "2026-07-09 10:30:00",
@@ -554,6 +560,121 @@ Tambien acepta camelCase:
 }
 ```
 
+### Actualizar solo semaforo de aduana
+
+```http
+PUT /api/crosses/stops/:crossStopId/customs/light
+```
+
+Llama:
+
+```text
+sp__cross_customs_light_upsert
+```
+
+Body aceptado:
+
+```json
+{
+  "customs_country": "MX",
+  "light": "YELLOW"
+}
+```
+
+Tambien acepta `customsCountry`. Si el registro no existe, lo inserta; si ya existe, solo actualiza `light` y `updated_at`.
+
+### Catalogo De Status De Cruces
+
+Ruta:
+
+```text
+GET /api/catalogs/cross-statuses
+GET /api/catalogs/cross-statuses?code=IN_PLANT
+```
+
+SP:
+
+```text
+sp_cat_cross_statuses_get(p_code)
+```
+
+### Catalogo De Destinatarios De Notificacion
+
+Rutas:
+
+```text
+GET /api/catalogs/notification-recipients
+POST /api/catalogs/notification-recipients
+PUT /api/catalogs/notification-recipients/:id
+```
+
+SP:
+
+```text
+sp_cat_notification_recipients_get(
+  p_id,
+  p_notification_channel_id,
+  p_customer_code,
+  p_is_active
+)
+
+sp_cat_notification_recipient_insert(
+  p_customer_code,
+  p_notification_channel_id,
+  p_recipient_value,
+  p_is_active
+)
+
+sp_cat_notification_recipient_update(
+  p_id,
+  p_customer_code,
+  p_notification_channel_id,
+  p_recipient_value,
+  p_is_active
+)
+```
+
+### Configuracion De Destinatarios Por Tipo De Notificacion
+
+Rutas:
+
+```text
+GET /api/notifications/reason-recipients
+POST /api/notifications/reason-recipients
+PUT /api/notifications/reason-recipients/:id
+PUT /api/notifications/reason-recipients/:id/deactivate
+```
+
+SP:
+
+```text
+sp_notification_reason_recipients_get(
+  p_customer_group_id,
+  p_notification_reason_code,
+  p_notification_channel_code,
+  p_is_active
+)
+
+sp_notification_reason_recipient_insert(
+  p_customer_group_id,
+  p_notification_reason_id,
+  p_notification_recipient_id,
+  p_notification_channel_id,
+  p_is_active
+)
+
+sp_notification_reason_recipient_update(
+  p_id,
+  p_customer_group_id,
+  p_notification_reason_id,
+  p_notification_recipient_id,
+  p_notification_channel_id,
+  p_is_active
+)
+
+sp_notification_reason_recipient_deactivate(p_id)
+```
+
 ## Status
 
 El status del cross se calcula desde `cross_stops` ordenados por `sequence`.
@@ -570,7 +691,7 @@ CROSSING                   MX_CUSTOMS salio y US_CUSTOMS no ha llegado
 AT_US_CUSTOMS              US_CUSTOMS llego y no salio
 IN_TRANSIT_TO_US_YARD      US_CUSTOMS salio y primer TX no ha llegado
 AT_US_YARD                 primer TX llego y no salio, si no es ultimo stop
-IN_TRANSIT_TO_CUSTOMER     ya paso US yard/customs y ultimo stop no ha salido
+IN_TRANSIT_TO_CUSTOMER     US_CUSTOMS salio, el siguiente stop no es EBT Yard y no ha llegado; o ya paso US yard/customs y ultimo stop no ha salido
 ```
 
 Status finales actuales:
@@ -578,6 +699,30 @@ Status finales actuales:
 ```text
 COMPLETED = id 12
 CANCELED  = id 13
+```
+
+## Fuentes De Arribo Y Salida En Pension EBT
+
+Para el stop de Pension EBT, `actual_arrival` puede venir de:
+
+```text
+MCLEOD
+YARD_ENTRY
+GPS_GEOFENCE
+MANUAL
+```
+
+`YARD_ENTRY` se toma de `sysebtapps_prd_exchange.d31_yard_latest` cuando `last_event_type = 'ENTRY'` y existe `entry_at`.
+
+`GPS_GEOFENCE` se toma como fallback cuando la ubicacion GPS incluye `At EBT Colombia`.
+
+Para la salida se conserva la logica existente:
+
+```text
+YARD_EXIT
+GPS_GEOFENCE
+MANUAL
+MCLEOD
 ```
 
 ## Integracion McLeod

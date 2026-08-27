@@ -4,6 +4,7 @@ import * as ctrCrosses from '../../controllers/crosses/crosses.controller.js';
 const router = Router();
 
 router.get('/active/trailers', ctrCrosses.getActiveCrosses);
+router.get('/search', ctrCrosses.searchCrosses);
 router.put('/stops/:crossStopId/customs', ctrCrosses.saveCrossCustoms);
 router.put('/:crossId/priority', ctrCrosses.updateCrossPriorityById);
 router.get('/:crossId', ctrCrosses.getCrossDetail);

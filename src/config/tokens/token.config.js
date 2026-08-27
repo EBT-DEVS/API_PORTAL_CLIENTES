@@ -61,6 +61,7 @@ export const signPortalClientToken = (userData) => {
             email: userData.email,
             customer_code: userData.customer_code,
             customer_name: userData.customer_name,
+            portal_groud_id: userData.portal_groud_id
         };
 
         return jwt.sign(payload, API_SECRET, API_TOKEN_OPTIONS);

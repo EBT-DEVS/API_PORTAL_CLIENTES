@@ -1,7 +1,33 @@
 import { upsertCrossCustoms } from '../../models/crosses/crosses.customs.model.js';
-import { getActiveCrossesData, getCrossDetailById, updateCrossPriority } from '../../models/crosses/crosses.model.js';
+import { getActiveCrossesData, getCrossDetailById, getFilteredCrossesData, updateCrossPriority } from '../../models/crosses/crosses.model.js';
 import { updateCrossStopTimes } from '../../models/crosses/crosses.stops.model.js';
 import { getTrailerData } from '../../models/db_gps/trailers.model.js';
+import { notifyCustomsLightIfNeeded } from '../../services/notifications/customsLightNotification.service.js';
+
+const CUSTOMS_LIGHT_VALUES = ['GREEN', 'YELLOW', 'RED'];
+
+const runCustomsLightNotification = async ({
+    cross_stop_id,
+    customs_country,
+    light,
+    comments,
+}) => {
+
+    try {
+        return await notifyCustomsLightIfNeeded({
+            cross_stop_id,
+            customs_country,
+            light,
+            comments,
+        });
+    } catch (error) {
+        return {
+            status: 'ERROR',
+            reason: error.message,
+        };
+    }
+
+};
 
 const normalizeString = (value) => (
     value == null ? null : String(value).trim()
@@ -60,6 +86,50 @@ const normalizeNullableCrossFilter = (value) => {
     }
 
     return null;
+
+};
+
+const normalizeDateTypeFilter = (value) => {
+
+    const normalizedValue = normalizeString(value)?.toUpperCase();
+
+    if (!normalizedValue) {
+        return null;
+    }
+
+    const dateTypeMap = {
+        ARRIVAL: 'ARRIVAL',
+        ARRIBO: 'ARRIVAL',
+        DEPARTURE: 'DEPARTURE',
+        SALIDA: 'DEPARTURE',
+        SCHEDULED: 'SCHEDULED',
+        PROGRAMADO: 'SCHEDULED',
+    };
+
+    return dateTypeMap[normalizedValue] || null;
+
+};
+
+const normalizeQuickFilter = (value) => {
+
+    const normalizedValue = normalizeString(value)?.toUpperCase();
+
+    if (!normalizedValue) {
+        return null;
+    }
+
+    const quickFilterMap = {
+        IN_PLANT: 'IN_PLANT',
+        PLANTA: 'IN_PLANT',
+        TO_BORDER: 'TO_BORDER',
+        CAMINO_A_FRONTERA: 'TO_BORDER',
+        SCHEDULED_CROSSES: 'SCHEDULED_CROSSES',
+        CRUCES_PROGRAMADOS: 'SCHEDULED_CROSSES',
+        COMPLETED_CROSSES: 'COMPLETED_CROSSES',
+        CRUCES_FINALIZADOS: 'COMPLETED_CROSSES',
+    };
+
+    return quickFilterMap[normalizedValue] || null;
 
 };
 
@@ -150,6 +220,118 @@ export const getActiveCrosses = async (req, res, next) => {
         return res.json({
             success: true,
             data: activeCrossesWithGps,
+        });
+
+    } catch (error) {
+        return next(error);
+    }
+
+};
+
+export const searchCrosses = async (req, res, next) => {
+
+    try {
+        const {
+            date_type,
+            dateType,
+            start,
+            end,
+            quick_filter,
+            quickFilter,
+            plant_code,
+            plantCode,
+            customer_code,
+            customerCode,
+            customer_group_id,
+            customerGroupId,
+            trailer_id,
+            trailerId,
+            caja,
+            priority_id,
+            priorityId,
+            is_cross,
+            isCross,
+            mcleod_order_id,
+            mcleodOrderId,
+            po_number,
+            poNumber,
+            status_id,
+            statusId,
+        } = req.query || {};
+        const dateTypeRawValue = date_type ?? dateType;
+        const quickFilterRawValue = quick_filter ?? quickFilter;
+        const isCrossRawValue = is_cross ?? isCross;
+        const dateTypeValue = normalizeDateTypeFilter(dateTypeRawValue);
+        const quickFilterValue = normalizeQuickFilter(quickFilterRawValue);
+        const isCrossValue = normalizeNullableCrossFilter(isCrossRawValue);
+        const customerGroupIdValue = normalizeNullablePositiveInteger(customer_group_id ?? customerGroupId);
+        const priorityIdValue = normalizeNullablePositiveInteger(priority_id ?? priorityId);
+        const statusIdValue = normalizeNullablePositiveInteger(status_id ?? statusId);
+
+        if (normalizeString(dateTypeRawValue) && dateTypeValue === null) {
+            return res.status(400).json({
+                success: false,
+                message: 'date_type invalido',
+            });
+        }
+
+        if (normalizeString(quickFilterRawValue) && quickFilterValue === null) {
+            return res.status(400).json({
+                success: false,
+                message: 'quick_filter invalido',
+            });
+        }
+
+        if (normalizeString(isCrossRawValue) && isCrossValue === null) {
+            return res.status(400).json({
+                success: false,
+                message: 'is_cross invalido',
+            });
+        }
+
+        if (Number.isNaN(priorityIdValue)) {
+            return res.status(400).json({
+                success: false,
+                message: 'priority_id invalido',
+            });
+        }
+
+        if (Number.isNaN(customerGroupIdValue)) {
+            return res.status(400).json({
+                success: false,
+                message: 'customer_group_id invalido',
+            });
+        }
+
+        if (Number.isNaN(statusIdValue)) {
+            return res.status(400).json({
+                success: false,
+                message: 'status_id invalido',
+            });
+        }
+
+        const crosses = await getFilteredCrossesData({
+            dateType: quickFilterValue ? null : dateTypeValue,
+            start: quickFilterValue ? null : normalizeNullableString(start),
+            end: quickFilterValue ? null : normalizeNullableString(end),
+            quickFilter: quickFilterValue,
+            plantCode: normalizeNullableString(plant_code ?? plantCode),
+            customerCode: normalizeCustomerCodeFilter(customer_code ?? customerCode),
+            customerGroupId: customerGroupIdValue,
+            trailerId: normalizeNullableString(trailer_id ?? trailerId ?? caja),
+            priorityId: priorityIdValue,
+            isCross: isCrossValue,
+            mcleodOrderId: normalizeNullableString(mcleod_order_id ?? mcleodOrderId),
+            poNumber: normalizeNullableString(po_number ?? poNumber),
+            statusId: statusIdValue,
+        });
+        const crossesWithGps = await Promise.all(
+            crosses.map(enrichActiveCrossWithGps)
+        );
+
+        return res.json({
+            success: true,
+            data: crossesWithGps,
         });
 
     } catch (error) {
@@ -268,7 +450,7 @@ export const saveCrossCustoms = async (req, res, next) => {
             });
         }
 
-        if (lightValue && !['GREEN', 'RED'].includes(lightValue)) {
+        if (lightValue && !CUSTOMS_LIGHT_VALUES.includes(lightValue)) {
             return res.status(400).json({
                 success: false,
                 message: 'light invalido',
@@ -296,6 +478,12 @@ export const saveCrossCustoms = async (req, res, next) => {
                 actual_departure: actualDepartureValue,
             })
             : null;
+        const notification = await runCustomsLightNotification({
+            cross_stop_id: crossStopId,
+            customs_country: customsCountryValue,
+            light: lightValue,
+            comments: commentsValue,
+        });
 
         return res.json({
             success: true,
@@ -303,6 +491,7 @@ export const saveCrossCustoms = async (req, res, next) => {
                 ...savedCustoms,
                 stop_times_updated: shouldUpdateStopTimes,
                 stop_times: stopTimes,
+                notification,
             },
         });
     } catch (error) {
