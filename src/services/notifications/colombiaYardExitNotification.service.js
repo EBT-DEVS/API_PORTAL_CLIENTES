@@ -1,6 +1,6 @@
 import { getTrailerData } from '../../models/db_gps/trailers.model.js';
 import { getCrossDetailById } from '../../models/crosses/crosses.model.js';
-import { updateCrossStopEta } from '../../models/crosses/crosses.stops.model.js';
+import { getCrossStopForEtaComparison, updateCrossStopEta } from '../../models/crosses/crosses.stops.model.js';
 import {
     clearColombiaYardStopDeparture,
     getColombiaYardGeofenceEventCandidates,
@@ -14,6 +14,7 @@ import { insertNotificationDispatchLog } from '../../models/notifications/notifi
 import { getNotificationReasonRecipients } from '../../models/notifications/notification.reason.recipients.model.js';
 import { enrichActiveStopEtaFromPcMiller } from '../crosses/crossesPcMillerEta.service.js';
 import { sendEmail } from './notificationChannelDispatcher.service.js';
+import { notifyEtaChangeIfNeeded } from './etaChangeNotification.service.js';
 
 const buildEmailSubject = (item) => `Caja ${item?.trailer_id || 'sin caja'} en inicio de aduana`;
 const NOTIFICATION_REASON_CODE = 'COLOMBIA_YARD_EXIT';
@@ -411,15 +412,26 @@ const recalculateAndPersistNextStopEta = async ({ crossId, trailerId }) => {
         };
     }
 
+    const previousStop = await getCrossStopForEtaComparison({
+        cross_id: crossId,
+        sequence: activeStop.sequence,
+    });
     const persisted = await updateCrossStopEta({
         cross_stop_id: activeStop.id,
         eta: activeStopEta.eta,
+    });
+    const etaNotification = await notifyEtaChangeIfNeeded({
+        previousEta: Number(previousStop?.id) === Number(activeStop.id) ? previousStop.eta : null,
+        newEta: activeStopEta.eta,
+        cross: detail.cross,
+        stop: activeStop,
     });
 
     return {
         updated: true,
         activeStopEta,
         stop: persisted,
+        etaNotification,
     };
 
 };

@@ -93,6 +93,14 @@ export const updateCrossStopTimes = async ({
 
 };
 
+export const getCrossStopForEtaComparison = async ({ cross_id, sequence }) => {
+    const [rows] = await pool.execute(
+        'SELECT id, source, stop_code, stop_name, eta FROM cross_stops WHERE cross_id = ? AND sequence = ? LIMIT 1',
+        [cross_id, sequence]
+    );
+    return rows[0] || null;
+};
+
 export const updateCrossStopEta = async ({
     cross_stop_id,
     eta = null,

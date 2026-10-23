@@ -1,9 +1,10 @@
 import { upsertCurrentCrossAssignment } from '../../models/crosses/crosses.assignments.model.js';
 import { getCrossDetailById, updateCrossFromMcleod } from '../../models/crosses/crosses.model.js';
-import { deleteUnreferencedCrossStopsAfterSequence, updateCrossSpecialStopGeofenceTimes, upsertCrossStopSync } from '../../models/crosses/crosses.stops.model.js';
+import { deleteUnreferencedCrossStopsAfterSequence, getCrossStopForEtaComparison, updateCrossSpecialStopGeofenceTimes, upsertCrossStopSync } from '../../models/crosses/crosses.stops.model.js';
 import { getTrailerData } from '../../models/db_gps/trailers.model.js';
 import { getTkGeofenceEvents } from '../../models/db_gps/tk.events.model.js';
 import { enrichActiveStopEtaFromPcMiller } from './crossesPcMillerEta.service.js';
+import { notifyEtaChangeIfNeeded } from '../notifications/etaChangeNotification.service.js';
 
 const toKey = (value) => (
     value == null ? null : String(value)
@@ -441,13 +442,18 @@ const findAssignmentStop = ({ mcleodStopId, payloadStopsByMcleodStopId, dbStopsB
 
 };
 
-const updateStopsForCross = async ({ crossId, stops = [] }) => {
+const updateStopsForCross = async ({ crossId, cross, stops = [] }) => {
 
     const updatedStops = [];
     const skippedStops = [];
+    const etaNotifications = [];
 
     for (const stop of stops) {
         try {
+            const previousStop = stop.eta ? await getCrossStopForEtaComparison({
+                cross_id: crossId,
+                sequence: stop.sequence,
+            }) : null;
             const updatedStop = await upsertCrossStopSync({
                 ...stop,
                 cross_id: crossId,
@@ -457,6 +463,22 @@ const updateStopsForCross = async ({ crossId, stops = [] }) => {
                 ...stop,
                 ...updatedStop,
             });
+
+            // Sequence numbers can be reused when a route changes. Compare only
+            // an existing stop at the same location and with the same source.
+            if (previousStop && ['source', 'stop_code', 'stop_name'].every((key) => (
+                normalizeCode(previousStop[key]) === normalizeCode(stop[key])
+            ))) {
+                etaNotifications.push({
+                    cross_stop_id: previousStop.id,
+                    ...await notifyEtaChangeIfNeeded({
+                        previousEta: previousStop.eta,
+                        newEta: stop.eta,
+                        cross,
+                        stop: { ...stop, id: previousStop.id },
+                    }),
+                });
+            }
         } catch (error) {
             skippedStops.push({
                 stop,
@@ -468,6 +490,7 @@ const updateStopsForCross = async ({ crossId, stops = [] }) => {
     return {
         updatedStops,
         skippedStops,
+        etaNotifications,
     };
 
 };
@@ -870,6 +893,12 @@ export const persistActiveCrossesUpdate = async ({ items = [] } = {}) => {
             const assignments = item.assignmentPayload?.assignments || [];
             const stopsResult = await updateStopsForCross({
                 crossId,
+                cross: {
+                    ...item.dbDetail?.cross,
+                    ...crossPayload.cross,
+                    mcleod_order_id: orderId,
+                    trailer_id: trailerId,
+                },
                 stops,
             });
             const staleStopsResult = await deleteStaleStopsForCross({
@@ -911,6 +940,7 @@ export const persistActiveCrossesUpdate = async ({ items = [] } = {}) => {
                 activeStopEta: stopsEtaResult.activeStopEta,
                 skippedActiveStopEtaReason: stopsEtaResult.skippedReason,
                 skippedStops: stopsResult.skippedStops,
+                etaNotifications: stopsResult.etaNotifications,
                 updatedEstimatedCustomsStops: estimatedCustomsResult.updatedEstimatedStops,
                 skippedEstimatedCustomsStops: estimatedCustomsResult.skippedEstimatedStops,
                 updatedGeofenceCustomsStops: geofenceCustomsResult.updatedGeofenceStops,
