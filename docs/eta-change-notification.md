@@ -3,9 +3,9 @@
 Se compara el ETA de PC*Miler guardado en `cross_stops.eta` con el nuevo
 ETA calculado para la misma parada. El correo se intenta enviar despues de
 guardar correctamente el nuevo valor, solamente si ambos son fechas validas y
-`Math.abs(nuevo - anterior) > 3600000`.
+`nuevo - anterior > 3600000`.
 
-- Aplica a adelantos y retrasos mayores a una hora.
+- Aplica unicamente a retrasos mayores a una hora; los adelantos no generan correo.
 - Una hora exacta, cambios menores, valores vacios o invalidos y paradas nuevas
   no generan correo.
 - Cada comparacion usa el ultimo valor guardado; los cambios menores no se acumulan.

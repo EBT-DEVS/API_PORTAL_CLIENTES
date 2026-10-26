@@ -31,7 +31,7 @@ export const getEtaChange = (previousEta, newEta) => {
     const next = toEtaDate(newEta);
     if (!previous || !next) return null;
     const differenceMs = next.getTime() - previous.getTime();
-    return Math.abs(differenceMs) > ONE_HOUR_MS
+    return differenceMs > ONE_HOUR_MS
         ? { previous, next, differenceMs }
         : null;
 };
@@ -75,10 +75,10 @@ export const notifyEtaChangeIfNeeded = async ({
             ['Parada', stop.stop_name || stop.stop_code],
             ['ETA anterior', formatEta(change.previous)],
             ['ETA nuevo', formatEta(change.next)],
-            ['Diferencia', `${(Math.abs(change.differenceMs) / 60000).toFixed(2)} minutos (${change.differenceMs > 0 ? 'retraso' : 'adelanto'})`],
+            ['Diferencia', `${(change.differenceMs / 60000).toFixed(2)} minutos (retraso)`],
         ];
         const html = `<div style="font-family: Arial, sans-serif; color: #1f2933; padding: 16px;">
-            <h2>Cambio de ETA mayor a una hora</h2>
+            <h2>Retraso de ETA mayor a una hora</h2>
             <table cellspacing="0" cellpadding="8" style="border-collapse: collapse;">
                 ${rows.map(([label, value]) => `<tr><th style="text-align: left; border: 1px solid #d9e2ec;">${escapeHtml(label)}</th><td style="border: 1px solid #d9e2ec;">${escapeHtml(value)}</td></tr>`).join('')}
             </table></div>`;
