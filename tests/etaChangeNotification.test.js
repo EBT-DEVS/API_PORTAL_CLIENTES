@@ -60,8 +60,39 @@ test('nonqualifying updates do not look up recipients, send, or log', async () =
     assert.deepEqual(calls, { recipients: [], emails: [], logs: [] });
 });
 
+test('status IDs 1, 12 and 13 never look up recipients, send, or log', async () => {
+    const { calls, dependencies, input } = buildFixture();
+    for (const status of [
+        { cross_status_id: 1 },
+        { cross_status_id: '1' },
+        { cross_status_id: 12 },
+        { cross_status_id: '12' },
+        { cross_status_id: 13 },
+        { cross_status_id: '13' },
+    ]) {
+        assert.deepEqual(await notifyEtaChangeIfNeeded({
+            ...input,
+            cross: { ...input.cross, ...status },
+        }, dependencies), { status: 'NOT_REQUIRED', reason: 'excluded_status' });
+    }
+    assert.deepEqual(calls, { recipients: [], emails: [], logs: [] });
+});
+
+test('status names and codes do not exclude an allowed status ID', async () => {
+    const { calls, dependencies, input } = buildFixture();
+    for (const status of ['COMPLETED', 'completado']) {
+        assert.equal((await notifyEtaChangeIfNeeded({
+            ...input,
+            cross: { ...input.cross, cross_status_id: 11, status_code: status, status_name: status },
+        }, dependencies)).status, 'SENT');
+    }
+    assert.equal(calls.emails.length, 2);
+});
+
 test('qualifying update uses configured active email recipients and logs the stop', async () => {
     const { calls, dependencies, input } = buildFixture();
+    input.cross.cross_status_id = 11;
+    input.cross.status_code = 'IN_TRANSIT_TO_CUSTOMER';
     assert.equal((await notifyEtaChangeIfNeeded(input, dependencies)).status, 'SENT');
     assert.equal(calls.recipients[0].customer_group_id, 3);
     assert.equal(calls.recipients[0].notification_channel_code, 'EMAIL');

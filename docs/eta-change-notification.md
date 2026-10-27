@@ -6,6 +6,8 @@ guardar correctamente el nuevo valor, solamente si ambos son fechas validas y
 `nuevo - anterior > 3600000`.
 
 - Aplica unicamente a retrasos mayores a una hora; los adelantos no generan correo.
+- Las ordenes con `cross_status_id` igual a `1`, `12` o `13` no generan correo,
+  independientemente del retraso. La exclusion usa unicamente el ID del estado.
 - Una hora exacta, cambios menores, valores vacios o invalidos y paradas nuevas
   no generan correo.
 - Cada comparacion usa el ultimo valor guardado; los cambios menores no se acumulan.

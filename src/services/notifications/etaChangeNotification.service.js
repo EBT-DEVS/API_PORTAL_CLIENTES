@@ -47,6 +47,10 @@ export const notifyEtaChangeIfNeeded = async ({
     cross = {},
     stop = {},
 } = {}, dependencies = {}) => {
+    if ([1, 12, 13].includes(Number(cross.cross_status_id))) {
+        return { status: 'NOT_REQUIRED', reason: 'excluded_status' };
+    }
+
     const change = getEtaChange(previousEta, newEta);
     if (!change) return { status: 'NOT_REQUIRED' };
 
