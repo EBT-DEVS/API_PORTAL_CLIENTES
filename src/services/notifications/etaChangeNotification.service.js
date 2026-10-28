@@ -76,7 +76,7 @@ export const notifyEtaChangeIfNeeded = async ({
             ['Caja', cross.trailer_id],
             ['Orden', cross.mcleod_order_id],
             ['PO', cross.po_number],
-            ['Parada', stop.stop_name || stop.stop_code],
+            ['Sig. Parada', stop.stop_name || stop.stop_code],
             ['ETA anterior', formatEta(change.previous)],
             ['ETA nuevo', formatEta(change.next)],
             ['Diferencia', `${(change.differenceMs / 60000).toFixed(2)} minutos (retraso)`],
