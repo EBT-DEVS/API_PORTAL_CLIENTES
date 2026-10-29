@@ -2,7 +2,7 @@ import { insertNotificationDispatchLog } from '../../models/notifications/notifi
 import { getNotificationReasonRecipients } from '../../models/notifications/notification.reason.recipients.model.js';
 import { sendEmail } from './notificationChannelDispatcher.service.js';
 
-const ONE_HOUR_MS = 60 * 60 * 1000;
+const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
 const escapeHtml = (value) => String(value ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -31,7 +31,7 @@ export const getEtaChange = (previousEta, newEta) => {
     const next = toEtaDate(newEta);
     if (!previous || !next) return null;
     const differenceMs = next.getTime() - previous.getTime();
-    return differenceMs > ONE_HOUR_MS
+    return differenceMs > TWO_HOURS_MS
         ? { previous, next, differenceMs }
         : null;
 };
@@ -82,7 +82,7 @@ export const notifyEtaChangeIfNeeded = async ({
             ['Diferencia', `${(change.differenceMs / 60000).toFixed(2)} minutos (retraso)`],
         ];
         const html = `<div style="font-family: Arial, sans-serif; color: #1f2933; padding: 16px;">
-            <h2>Retraso de ETA mayor a una hora</h2>
+            <h2>Retraso de ETA mayor a dos horas</h2>
             <table cellspacing="0" cellpadding="8" style="border-collapse: collapse;">
                 ${rows.map(([label, value]) => `<tr><th style="text-align: left; border: 1px solid #d9e2ec;">${escapeHtml(label)}</th><td style="border: 1px solid #d9e2ec;">${escapeHtml(value)}</td></tr>`).join('')}
             </table></div>`;

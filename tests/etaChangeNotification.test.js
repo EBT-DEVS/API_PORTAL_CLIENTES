@@ -4,12 +4,12 @@ import { getEtaChange, notifyEtaChangeIfNeeded } from '../src/services/notificat
 
 const previousEta = '2026-10-23 10:00:00';
 
-test('only delays strictly greater than one hour qualify', () => {
-    for (const next of ['2026-10-23 10:00:00', '2026-10-23 10:59:59', '2026-10-23 11:00:00', '2026-10-23 09:00:00', '2026-10-23 08:59:59', '2026-10-22 10:00:00']) {
+test('only delays strictly greater than two hours qualify', () => {
+    for (const next of ['2026-10-23 10:00:00', '2026-10-23 11:00:00', '2026-10-23 11:00:01', '2026-10-23 11:59:59', '2026-10-23 12:00:00', '2026-10-23 09:00:00', '2026-10-23 07:59:59', '2026-10-22 10:00:00']) {
         assert.equal(getEtaChange(previousEta, next), null);
     }
-    assert.equal(getEtaChange(previousEta, '2026-10-23 11:00:01').differenceMs, 3601000);
-    assert.equal(getEtaChange('2026-10-23 23:30:00', '2026-10-24 00:30:01').differenceMs, 3601000);
+    assert.equal(getEtaChange(previousEta, '2026-10-23 12:00:01').differenceMs, 7201000);
+    assert.equal(getEtaChange('2026-10-23 23:30:00', '2026-10-24 01:30:01').differenceMs, 7201000);
 });
 
 test('missing and invalid dates never qualify in either position', () => {
@@ -20,8 +20,8 @@ test('missing and invalid dates never qualify in either position', () => {
 });
 
 test('mysql Date objects and SQL strings use the same local time', () => {
-    assert.equal(getEtaChange(new Date(2026, 9, 23, 10), '2026-10-23 11:00:00'), null);
-    assert.equal(getEtaChange(previousEta, new Date(2026, 9, 23, 11, 0, 1)).differenceMs, 3601000);
+    assert.equal(getEtaChange(new Date(2026, 9, 23, 10), '2026-10-23 12:00:00'), null);
+    assert.equal(getEtaChange(previousEta, new Date(2026, 9, 23, 12, 0, 1)).differenceMs, 7201000);
 });
 
 test('small successive changes do not accumulate', () => {
@@ -45,7 +45,7 @@ const buildFixture = () => {
     };
     const input = {
         previousEta,
-        newEta: '2026-10-23 11:00:01',
+        newEta: '2026-10-23 12:00:01',
         cross: { customer_group_id: 3, trailer_id: '123', mcleod_order_id: '456' },
         stop: { id: 9, stop_name: '<Destino>' },
     };
@@ -54,7 +54,7 @@ const buildFixture = () => {
 
 test('nonqualifying updates do not look up recipients, send, or log', async () => {
     const { calls, dependencies, input } = buildFixture();
-    for (const newEta of [null, previousEta, '2026-10-23 11:00:00', '2026-10-23 09:00:00', '2026-10-23 08:59:59', '2026-10-22 10:00:00']) {
+    for (const newEta of [null, previousEta, '2026-10-23 11:00:00', '2026-10-23 11:00:01', '2026-10-23 11:59:59', '2026-10-23 12:00:00', '2026-10-23 09:00:00', '2026-10-23 07:59:59', '2026-10-22 10:00:00']) {
         assert.equal((await notifyEtaChangeIfNeeded({ ...input, newEta }, dependencies)).status, 'NOT_REQUIRED');
     }
     assert.deepEqual(calls, { recipients: [], emails: [], logs: [] });
@@ -101,7 +101,8 @@ test('qualifying update uses configured active email recipients and logs the sto
     assert.deepEqual(calls.emails[0].destinatarios, ['test@example.com']);
     assert.match(calls.emails[0].html, /&lt;Destino&gt;/);
     assert.match(calls.emails[0].html, /10:00:00/);
-    assert.match(calls.emails[0].html, /11:00:01/);
+    assert.match(calls.emails[0].html, /12:00:01/);
+    assert.match(calls.emails[0].html, /Retraso de ETA mayor a dos horas/);
     assert.match(calls.emails[0].html, /minutos \(retraso\)/);
     assert.doesNotMatch(calls.emails[0].html, /adelanto/);
     assert.equal(calls.logs[0].entity_id, 9);
