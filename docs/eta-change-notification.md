@@ -3,12 +3,20 @@
 Se compara el ETA de PC*Miler guardado en `cross_stops.eta` con el nuevo
 ETA calculado para la misma parada. El correo se intenta enviar despues de
 guardar correctamente el nuevo valor, solamente si ambos son fechas validas y
-`nuevo - anterior > 3600000`.
+`nuevo - anterior > 7200000`.
 
-- Aplica unicamente a retrasos mayores a una hora; los adelantos no generan correo.
+- Aplica unicamente a retrasos mayores a dos horas; los adelantos no generan correo.
+- Solo se envia entre las 06:00:00 y las 23:59:59 en `America/Matamoros`,
+  incluyendo los ajustes de horario de verano de esa zona.
+- Solo aplica a cruces (`is_cross = 1`). Se ordenan las paradas por `sequence`,
+  se localiza Pension EBT (`PENSIEBT`) y se toma la primera parada posterior
+  que no sea aduana (`MX_CUSTOMS` o `US_CUSTOMS`). Solo se notifica el cambio
+  de ETA de esa parada y solo si su cita (`sched_arrive`) es del dia en curso
+  en `America/Matamoros`. Sin Pension EBT, parada posterior o cita valida de
+  hoy, no se envia correo. La fecha del ETA no sustituye la fecha de cita.
 - Las ordenes con `cross_status_id` igual a `1`, `12` o `13` no generan correo,
   independientemente del retraso. La exclusion usa unicamente el ID del estado.
-- Una hora exacta, cambios menores, valores vacios o invalidos y paradas nuevas
+- Dos horas exactas, cambios menores, valores vacios o invalidos y paradas nuevas
   no generan correo.
 - Cada comparacion usa el ultimo valor guardado; los cambios menores no se acumulan.
 - No se comparan paradas de diferente ubicacion u origen que reutilicen la misma secuencia.
@@ -29,8 +37,9 @@ tabla adicional. El correo muestra caja, orden, PO, parada, ambos ETAs y diferen
 
 Los errores de correo no interrumpen la sincronizacion; se registra `FAILED`
 cuando el servicio de correo falla y `SENT` cuando responde correctamente.
-No hay reintento automatico del mismo cambio: la siguiente comparacion usa el ETA
-ya actualizado. Los resultados de sincronizacion incluyen `etaNotifications`;
+No hay reintento automatico del mismo cambio ni se encolan cambios fuera del
+horario permitido: la siguiente comparacion usa el ETA ya actualizado.
+Los resultados de sincronizacion incluyen `etaNotifications`;
 el recalculo posterior a salida devuelve `etaNotification`.
 
 ## Verificacion

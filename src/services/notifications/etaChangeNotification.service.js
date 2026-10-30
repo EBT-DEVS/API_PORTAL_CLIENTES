@@ -3,6 +3,7 @@ import { getNotificationReasonRecipients } from '../../models/notifications/noti
 import { sendEmail } from './notificationChannelDispatcher.service.js';
 
 const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
+const NOTIFICATION_TIME_ZONE = 'America/Matamoros';
 const escapeHtml = (value) => String(value ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -41,11 +42,34 @@ const formatEta = (date) => {
     return `${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${date.getFullYear()} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 };
 
+const getNotificationClock = (now) => Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+    timeZone: NOTIFICATION_TIME_ZONE,
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23',
+}).formatToParts(now).map(({ type, value }) => [type, value]));
+
+// Appointment SQL datetimes represent local wall time, just like stored ETAs.
+const isAppointmentToday = (appointment, clock) => {
+    const date = toEtaDate(appointment);
+    return date && date.getFullYear() === Number(clock.year)
+        && date.getMonth() + 1 === Number(clock.month) && date.getDate() === Number(clock.day);
+};
+
+const normalizeCode = (value) => String(value ?? '').trim().toUpperCase();
+const getRelevantStop = (stops) => {
+    const ordered = [...stops].sort((a, b) => Number(a.sequence) - Number(b.sequence));
+    const pensionIndex = ordered.findIndex((item) => normalizeCode(item.stop_code) === 'PENSIEBT');
+    if (pensionIndex < 0) return null;
+    return ordered.slice(pensionIndex + 1).find((item) => (
+        !['MX_CUSTOMS', 'US_CUSTOMS'].includes(normalizeCode(item.stop_code))
+    )) || null;
+};
+
 export const notifyEtaChangeIfNeeded = async ({
     previousEta,
     newEta,
     cross = {},
     stop = {},
+    stops = [],
 } = {}, dependencies = {}) => {
     if ([1, 12, 13].includes(Number(cross.cross_status_id))) {
         return { status: 'NOT_REQUIRED', reason: 'excluded_status' };
@@ -53,6 +77,22 @@ export const notifyEtaChangeIfNeeded = async ({
 
     const change = getEtaChange(previousEta, newEta);
     if (!change) return { status: 'NOT_REQUIRED' };
+
+    const now = dependencies.now ? dependencies.now() : new Date();
+    const clock = getNotificationClock(now);
+    if (Number(clock.hour) < 6) {
+        return { status: 'NOT_REQUIRED', reason: 'outside_notification_hours' };
+    }
+    if (Number(cross.is_cross) !== 1) {
+        return { status: 'NOT_REQUIRED', reason: 'not_a_crossing' };
+    }
+    const relevantStop = getRelevantStop(stops);
+    if (!relevantStop || Number(relevantStop.sequence) !== Number(stop.sequence)) {
+        return { status: 'NOT_REQUIRED', reason: 'not_relevant_stop' };
+    }
+    if (!isAppointmentToday(relevantStop.sched_arrive, clock)) {
+        return { status: 'NOT_REQUIRED', reason: 'appointment_not_today' };
+    }
 
     const getRecipients = dependencies.getRecipients || getNotificationReasonRecipients;
     const dispatch = dependencies.sendEmail || sendEmail;
@@ -93,7 +133,7 @@ export const notifyEtaChangeIfNeeded = async ({
             entity_id: stop.id || stop.cross_stop_id,
             subject,
             recipients_json: JSON.stringify(emails),
-            sent_at: new Date(),
+            sent_at: now,
         };
         try {
             await dispatch({ destinatarios: emails, asunto: subject, html });

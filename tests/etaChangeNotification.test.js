@@ -5,7 +5,7 @@ import { getEtaChange, notifyEtaChangeIfNeeded } from '../src/services/notificat
 const previousEta = '2026-10-23 10:00:00';
 
 test('only delays strictly greater than two hours qualify', () => {
-    for (const next of ['2026-10-23 10:00:00', '2026-10-23 11:00:00', '2026-10-23 11:00:01', '2026-10-23 11:59:59', '2026-10-23 12:00:00', '2026-10-23 09:00:00', '2026-10-23 07:59:59', '2026-10-22 10:00:00']) {
+    for (const next of ['2026-10-23 10:00:00', '2026-10-23 11:00:00', '2026-10-23 10:59:59', '2026-10-23 11:00:01', '2026-10-23 11:59:59', '2026-10-23 12:00:00', '2026-10-23 09:00:00', '2026-10-23 07:59:59', '2026-10-22 10:00:00']) {
         assert.equal(getEtaChange(previousEta, next), null);
     }
     assert.equal(getEtaChange(previousEta, '2026-10-23 12:00:01').differenceMs, 7201000);
@@ -20,7 +20,7 @@ test('missing and invalid dates never qualify in either position', () => {
 });
 
 test('mysql Date objects and SQL strings use the same local time', () => {
-    assert.equal(getEtaChange(new Date(2026, 9, 23, 10), '2026-10-23 12:00:00'), null);
+    assert.equal(getEtaChange(new Date(2026, 9, 23, 10), '2026-10-23 11:00:00'), null);
     assert.equal(getEtaChange(previousEta, new Date(2026, 9, 23, 12, 0, 1)).differenceMs, 7201000);
 });
 
@@ -32,6 +32,7 @@ test('small successive changes do not accumulate', () => {
 const buildFixture = () => {
     const calls = { recipients: [], emails: [], logs: [] };
     const dependencies = {
+        now: () => new Date('2026-10-23T17:00:00Z'),
         getRecipients: async (query) => {
             calls.recipients.push(query);
             return [1, 2].map(() => ({
@@ -46,15 +47,22 @@ const buildFixture = () => {
     const input = {
         previousEta,
         newEta: '2026-10-23 12:00:01',
-        cross: { customer_group_id: 3, trailer_id: '123', mcleod_order_id: '456' },
-        stop: { id: 9, stop_name: '<Destino>' },
+        cross: { is_cross: 1, customer_group_id: 3, trailer_id: '123', mcleod_order_id: '456' },
+        stop: { id: 9, sequence: 5, stop_name: '<Destino>' },
+        stops: [
+            { sequence: 1, stop_code: 'ORIGIN' },
+            { sequence: 2, stop_code: 'PENSIEBT' },
+            { sequence: 3, stop_code: 'MX_CUSTOMS' },
+            { sequence: 4, stop_code: 'US_CUSTOMS' },
+            { sequence: 5, stop_code: 'DEST', sched_arrive: '2026-10-23 18:00:00' },
+        ],
     };
     return { calls, dependencies, input };
 };
 
 test('nonqualifying updates do not look up recipients, send, or log', async () => {
     const { calls, dependencies, input } = buildFixture();
-    for (const newEta of [null, previousEta, '2026-10-23 11:00:00', '2026-10-23 11:00:01', '2026-10-23 11:59:59', '2026-10-23 12:00:00', '2026-10-23 09:00:00', '2026-10-23 07:59:59', '2026-10-22 10:00:00']) {
+    for (const newEta of [null, previousEta, '2026-10-23 11:00:00', '2026-10-23 10:59:59', '2026-10-23 11:00:01', '2026-10-23 11:59:59', '2026-10-23 12:00:00', '2026-10-23 09:00:00', '2026-10-23 07:59:59', '2026-10-22 10:00:00']) {
         assert.equal((await notifyEtaChangeIfNeeded({ ...input, newEta }, dependencies)).status, 'NOT_REQUIRED');
     }
     assert.deepEqual(calls, { recipients: [], emails: [], logs: [] });
@@ -111,7 +119,7 @@ test('qualifying update uses configured active email recipients and logs the sto
 
 test('missing group or recipients skips delivery', async () => {
     const { calls, dependencies, input } = buildFixture();
-    assert.equal((await notifyEtaChangeIfNeeded({ ...input, cross: {} }, dependencies)).reason, 'missing_customer_group');
+    assert.equal((await notifyEtaChangeIfNeeded({ ...input, cross: { is_cross: 1 } }, dependencies)).reason, 'missing_customer_group');
     dependencies.getRecipients = async () => [];
     assert.equal((await notifyEtaChangeIfNeeded(input, dependencies)).reason, 'missing_recipients');
     assert.equal(calls.emails.length, 0);
@@ -125,4 +133,66 @@ test('email failures are logged without throwing into synchronization', async ()
     assert.equal(calls.logs[0].status, 'FAILED');
     dependencies.insertLog = async () => { throw new Error('Log unavailable'); };
     assert.equal((await notifyEtaChangeIfNeeded(input, dependencies)).status, 'ERROR');
+});
+
+test('delivery window includes 06:00 and all of 23:59 in Matamoros time', async () => {
+    for (const [instant, expected] of [
+        ['2026-10-23T05:00:00Z', 'NOT_REQUIRED'], // 00:00
+        ['2026-10-23T10:59:59Z', 'NOT_REQUIRED'], // 05:59:59
+        ['2026-10-23T11:00:00Z', 'SENT'], // 06:00
+        ['2026-10-24T04:59:59Z', 'SENT'], // 23:59:59, still October 23
+        ['2026-10-24T05:00:00Z', 'NOT_REQUIRED'], // next midnight
+    ]) {
+        const { calls, dependencies, input } = buildFixture();
+        dependencies.now = () => new Date(instant);
+        assert.equal((await notifyEtaChangeIfNeeded(input, dependencies)).status, expected);
+        assert.equal(calls.emails.length, expected === 'SENT' ? 1 : 0);
+        if (expected === 'NOT_REQUIRED') assert.deepEqual(calls, { recipients: [], emails: [], logs: [] });
+    }
+});
+
+test('only crossings and the first non-customs stop after Pension EBT qualify', async () => {
+    const { calls, dependencies, input } = buildFixture();
+    for (const override of [
+        { cross: { ...input.cross, is_cross: 0 } },
+        { cross: { ...input.cross, is_cross: undefined } },
+        { stops: [] },
+        { stops: input.stops.filter((stop) => stop.stop_code !== 'PENSIEBT') },
+        { stops: input.stops.slice(0, 4) },
+        { stop: { sequence: 1 } },
+        { stop: { sequence: 2 } },
+        { stop: { sequence: 3 } },
+        { stop: { sequence: 4 } },
+        { stop: { sequence: 6 }, stops: [...input.stops, { sequence: 6, sched_arrive: '2026-10-23 18:00:00' }] },
+    ]) {
+        assert.equal((await notifyEtaChangeIfNeeded({ ...input, ...override }, dependencies)).status, 'NOT_REQUIRED');
+    }
+    assert.deepEqual(calls, { recipients: [], emails: [], logs: [] });
+    input.stops.reverse();
+    input.cross.is_cross = '1';
+    input.stop.sequence = '5';
+    assert.equal((await notifyEtaChangeIfNeeded(input, dependencies)).status, 'SENT');
+});
+
+test('the relevant stop needs a valid appointment today, regardless of ETA date', async () => {
+    const { calls, dependencies, input } = buildFixture();
+    const destination = input.stops.at(-1);
+    for (const appointment of [null, '', 'invalid', '2026-02-30 10:00:00', '2026-10-22 23:59:59', '2026-10-24 00:00:00']) {
+        destination.sched_arrive = appointment;
+        assert.equal((await notifyEtaChangeIfNeeded(input, dependencies)).reason, 'appointment_not_today');
+    }
+    assert.deepEqual(calls, { recipients: [], emails: [], logs: [] });
+    for (const appointment of ['2026-10-23 00:00:00', '2026-10-23 23:59:59', new Date(2026, 9, 23, 18)]) {
+        destination.sched_arrive = appointment;
+        assert.equal((await notifyEtaChangeIfNeeded({ ...input, newEta: '2026-10-24 01:00:00' }, dependencies)).status, 'SENT');
+    }
+});
+
+test('the delivery window follows winter time in Matamoros', async () => {
+    const { dependencies, input } = buildFixture();
+    input.stops.at(-1).sched_arrive = '2026-12-01 18:00:00';
+    dependencies.now = () => new Date('2026-12-01T11:59:59Z');
+    assert.equal((await notifyEtaChangeIfNeeded(input, dependencies)).reason, 'outside_notification_hours');
+    dependencies.now = () => new Date('2026-12-01T12:00:00Z');
+    assert.equal((await notifyEtaChangeIfNeeded(input, dependencies)).status, 'SENT');
 });

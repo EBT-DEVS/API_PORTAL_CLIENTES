@@ -425,6 +425,7 @@ const recalculateAndPersistNextStopEta = async ({ crossId, trailerId }) => {
         newEta: activeStopEta.eta,
         cross: detail.cross,
         stop: activeStop,
+        stops: etaResult.stops || stops,
     });
 
     return {

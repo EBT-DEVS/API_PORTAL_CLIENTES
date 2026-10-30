@@ -476,6 +476,7 @@ const updateStopsForCross = async ({ crossId, cross, stops = [] }) => {
                         newEta: stop.eta,
                         cross,
                         stop: { ...stop, id: previousStop.id },
+                        stops,
                     }),
                 });
             }
